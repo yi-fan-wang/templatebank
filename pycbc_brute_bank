@@ -31,6 +31,7 @@ from pycbc import transforms
 from pycbc.waveform.spa_tmplt import spa_length_in_time
 from pycbc.distributions import read_params_from_config
 from pycbc.distributions.utils import draw_samples_from_config, prior_from_config
+import lal
 
 parser = argparse.ArgumentParser(description=__doc__)
 pycbc.add_common_pycbc_options(parser)
@@ -342,6 +343,24 @@ if args.input_file:
     params = {k: f[k][:] for k in f}
     bank, _ = bank.check_params(gen, params, args.minimal_match)
 
+# Newtonian estimate of the merger time
+# Expression taken from Eq. (12) in https://arxiv.org/pdf/1911.06024
+def tmerg(mass1, mass2, e, fmin):
+    q = pycbc.conversions.q_from_mass1_mass2(mass1, mass2)
+    Mtot = mass1 + mass2
+
+    omega_start = numpy.pi * fmin * Mtot * lal.MTSUN_SI
+    # Use Kepler 3rd law
+    a0 = omega_start ** (-2 / 3.0)
+
+    e2 = e * e
+    e4 = e2 * e2
+
+    f_e = (1.0 + (73.0 / 24) * e2 + (37.0 / 96.0) * e4) / (1 - e2) ** 3.5
+    t_merger = 5 * ((1 + q) ** 2) * (a0**4.0) / (256 * q * f_e)
+    t_merger_SI = t_merger * Mtot * lal.MTSUN_SI
+
+    return t_merger_SI
 
 def draw(rtype):
 
