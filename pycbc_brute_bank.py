@@ -49,7 +49,8 @@ parser.add_argument('--max',
     help='list of the maximum parameter values', nargs='+', type=float)
 parser.add_argument('--approximant',  required=True,
     help='The waveform approximant to place')
-parser.add_argument('--minimal-match', default=0.97, type=float)
+parser.add_argument('--minimal-match', default=0.97, type=float, 
+    help='minimal match of SNR due to discreteness of the template bank')
 parser.add_argument('--buffer-length', default=2, type=float,
     help='size of waveform buffer in seconds')
 parser.add_argument('--max-signal-length', type= float, 
@@ -58,7 +59,7 @@ parser.add_argument('--sample-rate', default=2048, type=float,
     help='sample rate in seconds')
 parser.add_argument('--low-frequency-cutoff', default=20.0, type=float)
 parser.add_argument('--enable-sigma-bound', action='store_true')
-parser.add_argument('--tau0-threshold', type=float)
+parser.add_argument('--tau0-threshold', type=float, help='threshold to separate two waveforms')
 parser.add_argument('--permissive', action='store_true',
     help='Allow waveform generator to fail.')
 parser.add_argument('--placement-iterations', default=1000, type=int, 
@@ -66,17 +67,17 @@ parser.add_argument('--placement-iterations', default=1000, type=int,
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--tolerance', type=float)
 parser.add_argument('--max-mtotal', type=float)
-parser.add_argument('--min-mchirp', type=float)
-parser.add_argument('--max-mchirp', type=float)
+parser.add_argument('--min-mchirp', type=float, help='minimum chirp mass')
+parser.add_argument('--max-mchirp', type=float, help='maximum chirp mass')
 parser.add_argument('--fixed-params', type=str, nargs='*')
 parser.add_argument('--fixed-values', type=float, nargs='*')
-parser.add_argument('--max-q', type=float)
-parser.add_argument('--tau0-crawl', type=float)
-parser.add_argument('--tau0-start', type=float)
-parser.add_argument('--tau0-end', type=float)
+parser.add_argument('--max-q', type=float, help='maximum mass ratio')
+parser.add_argument('--tau0-crawl', type=float, help='step length tau0 would proceed')
+parser.add_argument('--tau0-start', type=float, help='starting value for tau0')
+parser.add_argument('--tau0-end', type=float, help='ending value for tau0')
 parser.add_argument('--tau0-cutoff-frequency', type=float, default=15.0)
 pycbc.psd.insert_psd_option_group(parser)
-args = parser.parse_args()
+args, unknown = parser.parse_known_args()
 
 pycbc.init_logging(args.verbose)
 numpy.random.seed(args.seed)
@@ -297,7 +298,7 @@ class GenUniformWaveform(object):
         
         if kwds['approximant'] in pycbc.waveform.fd_approximants():  
             hp, hc = pycbc.waveform.get_fd_waveform(delta_f=self.delta_f,
-                                                    f_ref=10.0, **kwds)
+                                                    **kwds)
             
             
             if 'fratio' in kwds:
@@ -526,3 +527,13 @@ for k in bank.keys():
     if val.dtype.char == 'U':
         val = val.astype('bytes')
     o[k] = val
+
+# stuff to run always here such as class/def
+def main():
+    pass
+
+if __name__ == "__main__":
+   # stuff only to run when not called via 'import' here
+   main()
+
+__all__=["GenUniformWaveform"]
