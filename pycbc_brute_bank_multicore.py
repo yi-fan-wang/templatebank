@@ -17,7 +17,8 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-"""Generate a bank of templates using a brute force stochastic method.
+"""Generate a bank of templates using a brute force stochastic method with
+multi cpus parallelization.
 """
 import numpy
 import h5py
@@ -55,7 +56,7 @@ parser.add_argument('--minimal-match', default=0.97, type=float,
 parser.add_argument('--buffer-length', default=2, type=float,
     help='size of waveform buffer in seconds')
 parser.add_argument('--max-signal-length', type= float, 
-                    help="When specified, it cuts the maximum length of the waveform model to the lengh provided")
+    help="When specified, it cuts the maximum length of the waveform model to the lengh provided")
 parser.add_argument('--sample-rate', default=2048, type=float,
     help='sample rate in seconds')
 parser.add_argument('--low-frequency-cutoff', default=20.0, type=float)
@@ -286,12 +287,12 @@ class TriangleBank(object):
                 )
             ):
                 waveform_cache += [return_wf]
-        
+
         num_added = 0 # initilizaiton
         for i in range(total_num):
             hp = waveform_cache[i]
 
-            if hp is not numpy.nan:
+            if isinstance(hp, pycbc.types.FrequencySeries):
                 hp.num_tried = i
                 hp.gen = gen
                 hp.threshold = threshold
@@ -300,10 +301,12 @@ class TriangleBank(object):
                 if hp not in self:
                     num_added += 1
                     self.insert(hp) #adding a new template into bank
-            else:
+            elif numpy.isnan(hp):
                 logging.info('%i/%i: Waveform generation failed!',
                              i, total_num)
                 continue
+            else:
+                raise ValueError("waveform generation error!")
 
         return bank, num_added / total_num
 
@@ -517,67 +520,58 @@ def cdraw(rtype, ts, te):
     
 tau0s = args.tau0_start
 tau0e = tau0s + args.tau0_crawl
-
-go = True
-
-region = 0
 while tau0e <= args.tau0_end:
-    conv = 1
+    accept = 1
     r = 0
-    while conv > tolerance:
+    while accept > tolerance:
         # Standard Round
         r += 1
         params = cdraw('uniform', tau0s, tau0e)
         if params is None:
-            if len(bank) > 0:
-                go = False
             break
 
         blen = len(bank)
-        bank, uconv = bank.check_params(gen, params, args.minimal_match)
-        logging.info("tau0 %3.1f-%3.1f: " 
-                     "uniform(round %s) finished! banksize:%s conv:%s added:%s\n",
-                     tau0s, tau0e,
-                     r, len(bank), uconv, len(bank) - blen)
+        bank, uaccept = bank.check_params(gen, params, args.minimal_match)
+        logging.info("tau0 %3.1f-%3.1f: uniform(round %s) finished! "
+                     "banksize:%s accept:%s added:%s\n",
+                     tau0s, tau0e, r, len(bank), uaccept, len(bank) - blen)
         
-        # only start to determine the convergence when going over 10 rounds
+        # only start to determine the acceptance when going over 10 rounds
         if r > 10:
-            conv = uconv 
+            accept = uaccept 
 
         # activate a KDE round after a uniform round
         kloop = 0
-        while ((kloop == 0) or (kconv / okconv) > .5) and len(bank) > 10:
+        while ((kloop == 0) or (kaccept / okaccept) > .5) and len(bank) > 10:
             r += 1
             kloop += 1
             params = cdraw('kde', tau0s, tau0e)
             blen = len(bank)
-            bank, kconv = bank.check_params(gen, params, args.minimal_match)
-            logging.info("tau0 %3.1f-%3.1f: "
-                         "KDE(round %s in total %s) finished! "
-                         "banksize: %s conv: %s added: %s\n",
-                         tau0s, tau0e,
-                         kloop, r, 
-                         len(bank), kconv, len(bank) - blen)
+            bank, kaccept = bank.check_params(gen, params, args.minimal_match)
+            logging.info("tau0 %3.1f-%3.1f: KDE(round %s in total %s) finished! "
+                         "banksize: %s accept: %s added: %s\n",
+                         tau0s, tau0e, kloop, r, 
+                         len(bank), kaccept, len(bank) - blen)
             
-            
-            if uconv:
-                logging.info('Ratio of convergences: %2.3f' % (kconv / (uconv)))
+            if uaccept:
+                logging.info('Ratio of acceptances: %2.3f' % (kaccept / (uaccept)))
 
             if kloop == 1:
-                okconv = kconv
+                okaccept = kaccept
 
-            if kconv <= tolerance:
-                conv = kconv
+            if kaccept <= tolerance:
+                accept = kaccept
                 break
 
     bank.culltau0(tau0s - args.tau0_threshold * 2.0)
     logging.info("Region Done %3.1f-%3.1f, %s stored", tau0s, tau0e, bank.activelen())
-    region += 1
+
     tau0s += args.tau0_crawl / 2
     tau0e += args.tau0_crawl / 2
 
 o = h5py.File(args.output_file, 'w')
-  
+o.attrs['minimal_match'] = args.minimal_match
+
 for k in bank.keys():
     val = bank.key(k)
     if val.dtype.char == 'U':
