@@ -78,7 +78,8 @@ parser.add_argument('--tau0-crawl', type=float, help='step length tau0 would pro
 parser.add_argument('--tau0-start', type=float, help='starting value for tau0')
 parser.add_argument('--tau0-end', type=float, help='ending value for tau0')
 parser.add_argument('--tau0-cutoff-frequency', type=float, default=15.0)
-parser.add_argument('--ncores', type=int, default=1, help='number of cores to use for parallelization.')
+parser.add_argument('--nprocesses', type=int, default=1,
+    help='Number of processes to use for waveform generation parallelization. If not given then only a single core will be used.')
 pycbc.psd.insert_psd_option_group(parser)
 args = parser.parse_args()
 
@@ -256,57 +257,29 @@ class TriangleBank(object):
             if m > mmax:
                 mmax = m
     
-    def check_params(self, gen, params, threshold):
+def check_params(self, gen, params, threshold):
+        num_added = 0
         total_num = len(tuple(params.values())[0])
-                
-        waveform_cache = [] #initilization
-        with multiprocessing.Pool(args.ncores) as pool:
-            for idx, return_wf in enumerate(
-                pool.imap_unordered(
-                    wf_wrapper,
-                    (
-                        {
-                            "approximant": str(_[0]),
-                            "mass1": float(_[1]),
-                            "mass2": float(_[2]),
-                            "spin1z": float(_[3]),
-                            "spin2z": float(_[4]),
-                            "eccentricity": float(_[5]),
-                            "rel_anomaly": float(_[6]),
-                        }
-                        for _ in zip(
-                            params["approximant"],
-                            params["mass1"],
-                            params["mass2"],
-                            params["spin1z"],
-                            params["spin2z"],
-                            params["eccentricity"],
-                            params["rel_anomaly"],
-                        )
-                    )
-                )
+        waveform_cache = []
+
+        pool = pycbc.pool.choose_pool(args.nprocesses)
+        for return_wf in pool.imap_unordered(
+                wf_wrapper,
+                ({k: params[k][idx] for k in params} for idx in range(total_num))
             ):
-                waveform_cache += [return_wf]
+            waveform_cache += [return_wf]
+        del pool
 
-        num_added = 0 # initilizaiton
-        for i in range(total_num):
-            hp = waveform_cache[i]
-
-            if isinstance(hp, pycbc.types.FrequencySeries):
-                hp.num_tried = i
+        for hp in waveform_cache:
+            if hp is not None:
                 hp.gen = gen
                 hp.threshold = threshold
-                hp.total_num = total_num
-                
                 if hp not in self:
                     num_added += 1
-                    self.insert(hp) #adding a new template into bank
-            elif numpy.isnan(hp):
-                logging.info('%i/%i: Waveform generation failed!',
-                             i, total_num)
-                continue
+                    self.insert(hp)
             else:
-                raise ValueError("waveform generation error!")
+                logging.info("Waveform generation failed!")
+                continue
 
         return bank, num_added / total_num
 
@@ -353,12 +326,13 @@ class GenUniformWaveform(object):
             hp = pycbc.waveform.get_waveform_filter(
                         pycbc.types.zeros(self.flen, dtype=numpy.complex64),
                         delta_f=self.delta_f, delta_t=dt,
-                        f_lower=self.f_lower, **kwds)
+                        **kwds)
 
         hp.resize(self.flen)
         hp = hp.astype(numpy.complex64)
         hp[self.kmin:-1] *= self.w
-        s = float(1.0 / pycbc.filter.sigmasq(hp, low_frequency_cutoff=self.f_lower) ** 0.5)
+        s = float(1.0 / pycbc.filter.sigmasq(hp,
+                                              low_frequency_cutoff=f) ** 0.5)
         hp *= s
         hp.params = kwds
         hp.view = hp[self.kmin:-1]
@@ -388,7 +362,7 @@ def wf_wrapper(p):
         hp = gen.generate(**p)
         return hp
     except Exception:
-        return numpy.nan
+        return None
             
 if args.input_file:
     f = h5py.File(args.input_file, 'r')
@@ -484,7 +458,6 @@ def draw(rtype):
         l = dists_joint.contains(params)
 
     params = {k: params[k][l] for k in params}
-
     return params
 
 def cdraw(rtype, ts, te):
