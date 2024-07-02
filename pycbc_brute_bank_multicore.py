@@ -17,18 +17,18 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-"""Generate a bank of templates using a brute force stochastic method with
-multi cpus parallelization.
+"""Generate a bank of templates using a brute force stochastic method.
 """
 import numpy
 import h5py
 import logging
 import argparse
+import pickle
 import numpy.random
 from scipy.stats import gaussian_kde
-import multiprocessing
 
 import pycbc.waveform, pycbc.filter, pycbc.types, pycbc.psd, pycbc.fft, pycbc.conversions
+import pycbc.pool
 from pycbc import transforms
 from pycbc.waveform.spa_tmplt import spa_length_in_time
 from pycbc.distributions import read_params_from_config
