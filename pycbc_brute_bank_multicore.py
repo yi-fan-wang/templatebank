@@ -34,6 +34,7 @@ from pycbc.waveform.spa_tmplt import spa_length_in_time
 from pycbc.distributions import read_params_from_config
 from pycbc.distributions.utils import draw_samples_from_config, prior_from_config
 import lal
+import lalsimulation as lalsim
 
 parser = argparse.ArgumentParser(description=__doc__)
 pycbc.add_common_pycbc_options(parser)
@@ -117,14 +118,16 @@ if args.fixed_params:
     fdict = {p: v for (p, v) in zip(args.fixed_params, args.fixed_values)}
 
 class Shrinker(object):
-    def __init__(self, data):
+    def __init__(self, data, nprocesses):
         self.data = data
+        self.nprocesses = nprocesses
 
     def pop(self):
         if len(self.data) == 0:
             return None
-        l = self.data[-1]
-        self.data = self.data[:-1]
+        popnum = min(len(self.data), self.nprocesses)
+        l = self.data[-1*popnum:]
+        self.data = self.data[:-1*popnum]
         return l
 
 class TriangleBank(object):
@@ -226,9 +229,10 @@ class TriangleBank(object):
         mtau = len(r)
 
         # Try to do some actual matches
-        inc = Shrinker(r*1)
+        inc = Shrinker(r*1, args.nprocesses)
         while 1:
             j = inc.pop()
+            print('j', j)
             if j is None:
                 newhp.matches = matches[r]
                 newhp.indices = r
@@ -238,26 +242,34 @@ class TriangleBank(object):
                                  len(self), msig, mtau, mnum, mmax))
                 return False
 
-            oldhp = self[j]
-            m = newhp.gen.match(newhp, oldhp)
-            matches[j] = m
-            mnum += 1
+            match_cache = {}
+            pool = pycbc.pool.choose_pool(args.nprocesses)
+            for return_idx, m in pool.imap_unordered(
+                match_wrapper,
+                ({'idx': i,
+                  'newhp': newhp,
+                  'hp_bank': self[i]}
+                for i in j) 
+            ):
+                matches[return_idx] = m
+                mnum += 1
 
-            # Update bounding match values, apply triangle inequality
-            maxmatches = oldhp.matches - m + 1.10
-            update = numpy.where(maxmatches < matches[oldhp.indices])[0]
-            matches[oldhp.indices[update]] = maxmatches[update]
+                # Update bounding match values, apply triangle inequality
+                maxmatches = oldhp.matches - m + 1.10
+                update = numpy.where(maxmatches < matches[oldhp.indices])[0]
+                matches[oldhp.indices[update]] = maxmatches[update]
 
-            # Update where to calculate matches
-            skip_threshold = 1 - (1 - newhp.threshold) * 2.0
-            inc.data = inc.data[matches[inc.data] > skip_threshold]
+                # Update where to calculate matches
+                skip_threshold = 1 - (1 - newhp.threshold) * 2.0
+                inc.data = inc.data[matches[inc.data] > skip_threshold]
 
-            if m > newhp.threshold:
-                return True
-            if m > mmax:
-                mmax = m
+                if m > newhp.threshold:
+                    return True
+                if m > mmax:
+                    mmax = m
+            del pool
     
-def check_params(self, gen, params, threshold):
+    def check_params(self, gen, params, threshold):
         num_added = 0
         total_num = len(tuple(params.values())[0])
         waveform_cache = []
@@ -270,10 +282,12 @@ def check_params(self, gen, params, threshold):
             waveform_cache += [return_wf]
         del pool
 
-        for hp in waveform_cache:
+        for i, hp in enumerate(waveform_cache):
             if hp is not None:
                 hp.gen = gen
                 hp.threshold = threshold
+                hp.num_tried = i + 1
+                hp.total_num = total_num
                 if hp not in self:
                     num_added += 1
                     self.insert(hp)
@@ -363,7 +377,13 @@ def wf_wrapper(p):
         return hp
     except Exception:
         return None
-            
+
+def match_wrapper(p):
+    idx = p['idx']
+    newhp = p['newhp']
+    hp_bank = p['hp_bank']
+    return idx, newhp.gen.match(newhp, hp_bank)
+       
 if args.input_file:
     f = h5py.File(args.input_file, 'r')
     params = {k: f[k][:] for k in f}
@@ -371,7 +391,7 @@ if args.input_file:
 
 # Newtonian estimate of the merger time
 # Expression taken from Eq. (12) in https://arxiv.org/pdf/1911.06024
-def tmerg(mass1, mass2, e, fmin):
+def tecc_newtonian(mass1, mass2, e, fmin):
     q = pycbc.conversions.q_from_mass1_mass2(mass1, mass2)
     Mtot = mass1 + mass2
 
@@ -387,6 +407,11 @@ def tmerg(mass1, mass2, e, fmin):
     t_merger_SI = t_merger * Mtot * lal.MTSUN_SI
 
     return t_merger_SI
+
+def tecc_seobnrv5(mass1, mass2, e, s1z, s2z, fmin):
+
+    return lalsim.SimIMRSEOBNRv5ROMTimeOfFrequency(fmin, 
+                    m1 * lal.MSUN_SI, m2 * lal.MSUN_SI, s1z, s2z)
 
 def draw(rtype):
 
