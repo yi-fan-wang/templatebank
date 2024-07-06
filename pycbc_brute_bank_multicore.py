@@ -257,7 +257,7 @@ class TriangleBank(object):
             if m > mmax:
                 mmax = m
     
-def check_params(self, gen, params, threshold):
+    def check_params(self, gen, params, threshold):
         num_added = 0
         total_num = len(tuple(params.values())[0])
         waveform_cache = []
