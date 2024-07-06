@@ -270,10 +270,12 @@ def check_params(self, gen, params, threshold):
             waveform_cache += [return_wf]
         del pool
 
-        for hp in waveform_cache:
+        for i, hp in enumerate(waveform_cache):
             if hp is not None:
                 hp.gen = gen
                 hp.threshold = threshold
+                hp.total_num = total_num
+                hp.num_tried = i + 1
                 if hp not in self:
                     num_added += 1
                     self.insert(hp)
