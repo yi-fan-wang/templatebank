@@ -90,7 +90,6 @@ def match_wrapper(p):
     h2 =pycbc.types.FrequencySeries(initial_array=p['h2_data'], delta_f=p['h2_delta_f'],epoch=p['h2_epoch'])
     return p['bank_index'], gen.match(h1, h2)
 
-
 def gen_injections():
     mass_lim = (5, 100)
     spin_lim = (-0.5, 0.5)
@@ -135,8 +134,8 @@ def main():
                         help="Number of processes to use for waveform generation parallelization. \
                               If not given then only a single core will be used.")
     parser.add_argument('--tau0-tolerance', type=float, default=1.0,
-                        help="Size to measure the neighbors in the template bank with a particular injection")
-    parser.add_argument('--output', type=str, default='./',
+                        help="Size to measure the neighbors in the template bank of a particular injection")
+    parser.add_argument('--output', type=str, default='./fitfac.csv',
                         help="Path to output fitting factors.")
     args = parser.parse_args()
 
@@ -157,38 +156,29 @@ def main():
     logging.info("Read bank time: %f", (datetime.datetime.now() - read_t).total_seconds())
 
     wf_cache = {}
-    for ii in df_bank.index[:100]:
+    logging.info("Loading waveform from a bank...")
+    for ii in tqdm(df_bank.index):
         wf_cache[ii] = pycbc.types.load_frequencyseries(args.bank_waveform, str(ii))
-    logging.info("Read waveform time: %f", (datetime.datetime.now() - read_t).total_seconds())
     
-
     inj = gen_injections()
     df_ff = pd.DataFrame(inj.rvs(args.ninjections))
     df_ff['tau0'] = pycbc.conversions.tau0_from_mass1_mass2(df_ff['mass1'],df_ff['mass2'],15)
-    #for k in df_ff.columns:
-    #    df_ff['b'+str(k)] = ""
-
-    #df_ff['fittingfactor'] = ""
     df_ff['index'] = df_ff.index
     df_ff['approximant'] = 'SEOBNRv5E'
     df_ff['f_lower'] = 20.0
 
-    # +
     inj_cache = {}
     parlist = ['index', 'approximant', 'f_lower', 'mass1', 'mass2', 'spin1z', 'spin2z', 'eccentricity', 'rel_anomaly']
-
-    wf_wrapper_t = datetime.datetime.now()
     logging.info("Generating injection waveforms...")
     with multiprocessing.Pool(args.nprocesses) as pool:
         for return_i, return_hp in pool.imap_unordered(
-            wf_wrapper,
-            ({k: df_ff.loc[idx,k] for k in parlist} for idx in tqdm(df_ff.index))
-            ):
+                wf_wrapper,
+                ({k: df_ff.loc[idx,k] for k in parlist} for idx in tqdm(df_ff.index))
+                ):
             inj_cache[return_i] = return_hp
-    logging.info("Injection waveforms generation time: %f", (datetime.datetime.now() - wf_wrapper_t ).total_seconds())
+    logging.info("Injection waveforms generation done")
 
-    # do fitting factor calculations
-    match_t = datetime.datetime.now()
+    # fitting factor calculations
     all_fitting_factors = []
     for ii in tqdm(df_ff.index):
         calls = []
@@ -197,8 +187,8 @@ def main():
             logging.info("Failed waveform generation in injections for #%i", ii)
             continue
 
-        #neighbor = df_bank[abs(df_bank['tau0']- df_ff.loc[ii,'tau0']) < args.tau0_tolerance].index
-        neighbor = range(100)     
+        neighbor = df_bank[abs(df_bank['tau0']- df_ff.loc[ii,'tau0']) < args.tau0_tolerance].index
+        #neighbor = range(100)     
         calls += [
                 {'bank_index': jj,
                 'h1_data': hpinj.data,
@@ -208,36 +198,35 @@ def main():
                 'h2_delta_f': wf_cache[jj].delta_f,
                 'h2_epoch': wf_cache[jj].epoch} for jj in neighbor
             ]
-        #logging.info("Number of jobs = %i", len([elem for row in calls for elem in row]))
+        logging.info("Number of FF jobs = %i", len(neighbor))
 
         # do some fitting factor calculations
+        maxmatch = 0
+        maxindex = None
         with multiprocessing.Pool(args.nprocesses) as pool:
-            maxmatch = 0
-            maxindex = None
             for return_jj, return_match in pool.imap_unordered(
-                match_wrapper,
-                calls
-            ):
+                    match_wrapper,
+                    calls
+                    ):
                 if return_match > maxmatch:
                     maxmatch = return_match
                     maxindex = return_jj
 
-            dict_current = {'row': ii, 'fittingfactor': maxmatch, }
-            for cname in ['eccentricity', 'mass1', 'mass2', 'rel_anomaly', 'spin1z', 'spin2z', 'tau0']:
-                dict_current['b'+cname] = df_bank.loc[maxindex, cname]
+        dict_current = {'row': ii, 'fittingfactor': maxmatch}
+        for cname in ['eccentricity', 'mass1', 'mass2', 'rel_anomaly', 'spin1z', 'spin2z', 'tau0']:
+            dict_current['b'+cname] = df_bank.loc[maxindex, cname]
 
-            all_fitting_factors += [
-                dict_current
+        all_fitting_factors += [
+            dict_current
             ]
-    logging.info("match_t time: %f", (datetime.datetime.now() - match_t ).total_seconds())
 
-    filename = 'fitfac_'+str(uuid.uuid4())[:6]+'.csv'
     df_all_fitting_factor = pd.DataFrame(all_fitting_factors)
-    #result = df_ff.drop(columns={'beccentricity'}).set_index("index").join(df_all_fitting_factor.set_index('row'),
-    #                                                                     how='outer',
-    #                                                                     rsuffix='_r')
-    result = df_ff.set_index("index").join(df_all_fitting_factor.set_index('row'), how='outer', rsuffix='_r')
-    result.to_csv(args.output + filename, index=False)
+    result = df_ff.set_index("index").join(df_all_fitting_factor.set_index('row'),
+                                           how='outer',
+                                           rsuffix='_r')
+    #filename = 'fitfac_'+str(uuid.uuid4())[:6]+'.csv'
+    filename = args.output
+    result.to_csv(filename, index=False)
 
 if __name__ == '__main__':
     main()
