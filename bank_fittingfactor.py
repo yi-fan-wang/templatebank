@@ -15,6 +15,9 @@ import uuid
 from argparse import ArgumentParser
 import logging
 
+
+toy_num = 20000
+
 class GenUniformWaveform(object):
     '''Waveform Generator
     '''
@@ -158,6 +161,7 @@ def main():
     wf_cache = {}
     logging.info("Loading waveform from a bank...")
     for ii in tqdm(df_bank.index):
+    #for ii in tqdm(df_bank.index[:toy_num]):
         wf_cache[ii] = pycbc.types.load_frequencyseries(args.bank_waveform, str(ii))
     
     inj = gen_injections()
@@ -181,15 +185,18 @@ def main():
     # fitting factor calculations
     all_fitting_factors = []
     for ii in tqdm(df_ff.index):
-        calls = []
+
+        tnow = datetime.datetime.now()
+        
         hpinj = inj_cache[ii]
         if hpinj == None:
             logging.info("Failed waveform generation in injections for #%i", ii)
             continue
-
+        
         neighbor = df_bank[abs(df_bank['tau0']- df_ff.loc[ii,'tau0']) < args.tau0_tolerance].index
-        #neighbor = range(100)     
-        calls += [
+        #neighbor = range(toy_num)    
+        logging.info("Number of FF jobs = %i", len(neighbor)) 
+        calls = [
                 {'bank_index': jj,
                 'h1_data': hpinj.data,
                 'h1_delta_f': hpinj.delta_f,
@@ -198,7 +205,9 @@ def main():
                 'h2_delta_f': wf_cache[jj].delta_f,
                 'h2_epoch': wf_cache[jj].epoch} for jj in neighbor
             ]
-        logging.info("Number of FF jobs = %i", len(neighbor))
+
+        t_neighbor = datetime.datetime.now()
+        logging.info("Finding neighbors time: %f", (t_neighbor - tnow).total_seconds())
 
         # do some fitting factor calculations
         maxmatch = 0
@@ -211,11 +220,18 @@ def main():
                 if return_match > maxmatch:
                     maxmatch = return_match
                     maxindex = return_jj
+        
+        t_multi = datetime.datetime.now()
+        logging.info("Multiprocessing time: %f", (t_multi - t_neighbor).total_seconds())
 
         dict_current = {'row': ii, 'fittingfactor': maxmatch}
         for cname in ['eccentricity', 'mass1', 'mass2', 'rel_anomaly', 'spin1z', 'spin2z', 'tau0']:
             dict_current['b'+cname] = df_bank.loc[maxindex, cname]
-
+        
+        t_loc = datetime.datetime.now()
+        
+        logging.info("Locate time: %f", (t_loc - t_multi).total_seconds())
+        
         all_fitting_factors += [
             dict_current
             ]
