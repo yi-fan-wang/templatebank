@@ -62,7 +62,7 @@ def main():
             for k in f_bank.keys():
                 f_write[k] = f_bank[k][()]
         # https://github.com/h5py/h5py/issues/1329
-        f_write['duration'] = duration
+        f_write['template_duration'] = duration
 
 if __name__ == "__main__":
     main()
