@@ -127,7 +127,7 @@ def main():
     parser = ArgumentParser()
     parser.add_argument('--bank', type=str, required=True,
                         help="Template bank with only parameters")
-    parser.add_argument('--bank-waveform', type=str, required=True,
+    parser.add_argument('--bank-waveform', type=str,
                         help="Template bank with waveform pre-stored")
     parser.add_argument('--ninjections', type=int, required=True,
                         help="Number of injections to compute fitting factors")
@@ -143,6 +143,7 @@ def main():
     global gen
     gen = GenUniformWaveform(buffer_length = 32, sample_rate = 2048, f_lower = 20)
 
+    # Read the template bank parameters
     read_t = datetime.datetime.now()
     with h5py.File(args.bank) as f:
         df_bank = pd.DataFrame(
@@ -152,22 +153,36 @@ def main():
             'eccentricity': f['eccentricity'][:],
             'rel_anomaly': f['rel_anomaly'][:],
             'spin1z': f['spin1z'][:],
-            'spin2z': f['spin2z'][:]}
+            'spin2z': f['spin2z'][:],
+            'approximant': f['approximant'][:].astype('str'),
+            'f_lower': f['f_lower'][:]}
         )
     logging.info("Read bank time: %f", (datetime.datetime.now() - read_t).total_seconds())
 
     wf_cache = {}
-    logging.info("Loading waveform from a bank...")
-    for ii in tqdm(df_bank.index):
-    #for ii in tqdm(df_bank.index[:toy_num]):
-        wf_cache[ii] = pycbc.types.load_frequencyseries(args.bank_waveform, str(ii))
+    if args.bank_waveform is None:
+        # generate waveforms
+        df_bank['index'] = df_bank.index
+        parlist = ['index', 'approximant', 'f_lower', 'mass1', 'mass2', 'spin1z', 'spin2z', 'eccentricity', 'rel_anomaly']
+        with multiprocessing.Pool(args.nprocesses) as pool:
+            for return_i, return_hp in pool.imap_unordered(
+                wf_wrapper,
+                ({k: df_bank.loc[idx,k] for k in parlist} for idx in tqdm(df_bank.index))
+            ):
+                wf_cache[return_i] = return_hp
+    else:
+        logging.info("Loading waveform from a bank...")
+        for ii in tqdm(df_bank.index):
+        #for ii in tqdm(df_bank.index[:toy_num]):
+            wf_cache[ii] = pycbc.types.load_frequencyseries(args.bank_waveform, str(ii))
     
+    # Generate simulated signals
     inj = gen_injections()
     df_ff = pd.DataFrame(inj.rvs(args.ninjections))
     df_ff['tau0'] = pycbc.conversions.tau0_from_mass1_mass2(df_ff['mass1'],df_ff['mass2'],15)
     df_ff['index'] = df_ff.index
-    df_ff['approximant'] = 'SEOBNRv5E'
-    df_ff['f_lower'] = 20.0
+    df_ff['approximant'] = df_bank['approximant'][0]
+    df_ff['f_lower'] = df_bank['f_lower'][0]
 
     inj_cache = {}
     parlist = ['index', 'approximant', 'f_lower', 'mass1', 'mass2', 'spin1z', 'spin2z', 'eccentricity', 'rel_anomaly']
@@ -180,7 +195,7 @@ def main():
             inj_cache[return_i] = return_hp
     logging.info("Injection waveforms generation done")
 
-    # fitting factor calculations
+    # Fitting factor calculations
     all_fitting_factors = []
     for ii in tqdm(df_ff.index):
         tnow = datetime.datetime.now()
