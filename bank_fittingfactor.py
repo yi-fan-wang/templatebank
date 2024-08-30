@@ -1,27 +1,22 @@
-import datetime
-
 import numpy as np
-import numpy
 import pandas as pd
 import h5py
 
-import pycbc.conversions
-import pycbc.distributions
-import pycbc.waveform, pycbc.filter, pycbc.types, pycbc.psd, pycbc.fft
+import pycbc.conversions, pycbc.distributions, pycbc.waveform, pycbc.filter, pycbc.types, pycbc.psd, pycbc.fft
 
 from tqdm import tqdm
+import datetime
 import multiprocessing
 import uuid
 from argparse import ArgumentParser
 import logging
 
-
-toy_num = 20000
+#toy_num = 20000
 
 class GenUniformWaveform(object):
     '''Waveform Generator
     '''
-    def __init__(self,buffer_length, sample_rate, f_lower):
+    def __init__(self, buffer_length, sample_rate, f_lower):
         self.f_lower = f_lower
         self.delta_f = 1.0 / buffer_length
         tlen = int(buffer_length * sample_rate) # buffer length x sample_rate
@@ -32,33 +27,36 @@ class GenUniformWaveform(object):
             self.flen, self.delta_f, self.f_lower, is_asd_file = False)
         
         self.kmin = int(f_lower * buffer_length)
-        self.w = ((1.0 / psd[self.kmin:-1]) ** 0.5).astype(numpy.float32)
+        self.w = ((1.0 / psd[self.kmin:-1]) ** 0.5).astype(np.float32)
         
-        qtilde = pycbc.types.zeros(tlen, numpy.complex64)
-        q = pycbc.types.zeros(tlen, numpy.complex64)
+        qtilde = pycbc.types.zeros(tlen, np.complex64) # correlation in Fourier domain
+        q = pycbc.types.zeros(tlen, np.complex64) # correlation
         self.qtilde_view = qtilde[self.kmin:self.flen - 1]
         self.ifft = pycbc.fft.IFFT(qtilde, q)
         
+        # the maximum is around 0
         self.md = q._data[-100:]
-        self.md2 = q._data[0:100]
+        self.md2 = q._data[0:100] 
 
-    def generate(self, **kwds):  
+    def generate(self, **kwds):
+        '''Return normalized hp
+        '''
         if kwds['approximant'] in pycbc.waveform.fd_approximants():  
             hp, _ = pycbc.waveform.get_fd_waveform(delta_f = self.delta_f, **kwds)
         else:
             dt = 1.0 / self.sample_rate
             hp = pycbc.waveform.get_waveform_filter(
-                        pycbc.types.zeros(self.flen, dtype=numpy.complex64),
+                        pycbc.types.zeros(self.flen, dtype=np.complex64),
                         delta_f=self.delta_f,
                         delta_t=dt,
                         f_lower=self.f_lower,
                         **kwds)
         
         hp.resize(self.flen)
-        hp = hp.astype(numpy.complex64)
+        hp = hp.astype(np.complex64)
         
         hp[self.kmin:-1] *= self.w
-        s = pycbc.filter.sigmasq(hp,low_frequency_cutoff=self.f_lower)
+        s = pycbc.filter.sigmasq(hp, low_frequency_cutoff=self.f_lower)
         hp /= s**0.5 
         
         hp.params = kwds
@@ -185,7 +183,6 @@ def main():
     # fitting factor calculations
     all_fitting_factors = []
     for ii in tqdm(df_ff.index):
-
         tnow = datetime.datetime.now()
         
         hpinj = inj_cache[ii]
@@ -240,8 +237,8 @@ def main():
     result = df_ff.set_index("index").join(df_all_fitting_factor.set_index('row'),
                                            how='outer',
                                            rsuffix='_r')
-    #filename = 'fitfac_'+str(uuid.uuid4())[:6]+'.csv'
-    filename = args.output
+    filename = 'fitfac_'+str(uuid.uuid4())[:6]+'.csv'
+    #filename = args.output
     result.to_csv(filename, index=False)
 
 if __name__ == '__main__':
