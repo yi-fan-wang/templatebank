@@ -197,7 +197,7 @@ def main():
 
     # Fitting factor calculations
     all_fitting_factors = []
-    for ii in df_ff.index:
+    for ii in tqdm(df_ff.index):
         logging.info("Considering injections #%i", ii)
         tnow = datetime.datetime.now()
         
@@ -209,23 +209,14 @@ def main():
         neighbor = df_bank[abs(df_bank['tau0']- df_ff.loc[ii,'tau0']) < args.tau0_tolerance].index
         #neighbor = range(toy_num)    
         logging.info("Number of FF jobs = %i", len(neighbor)) 
-        calls = [
-                {'bank_index': jj,
-                'h1_data': hpinj.data,
-                'h1_delta_f': hpinj.delta_f,
-                'h2_data': wf_cache[jj].data,
-                'h2_delta_f': wf_cache[jj].delta_f
-                } for jj in neighbor
-            ]
-            
         # do some fitting factor calculations
         maxmatch = 0
         maxindex = None
-        for call in tqdm(calls):
-            return_jj, return_match = match_wrapper(call)
-            if return_match > maxmatch:
-                maxmatch = return_match
-                maxindex = return_jj
+        for jj in neighbor:
+            match = gen.match(hpinj, wf_cache[jj])
+            if match > maxmatch:
+                maxmatch = match
+                maxindex = jj
         
         dict_current = {'row': ii, 'fittingfactor': maxmatch}
         for cname in ['eccentricity', 'mass1', 'mass2', 'rel_anomaly', 'spin1z', 'spin2z', 'tau0']:
