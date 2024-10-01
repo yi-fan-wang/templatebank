@@ -34,17 +34,7 @@ import multiprocessing
 
 import lal
 import lalsimulation as lalsim
-
-class Shrinker(object):
-    def __init__(self, data):
-        self.data = data
-
-    def pop(self):
-        if len(self.data) == 0:
-            return None
-        l = self.data[-1]
-        self.data = self.data[:-1]
-        return l
+from sklearn import neighbors
 
 class GenUniformWaveform(object):
     """
@@ -116,8 +106,7 @@ class GenUniformWaveform(object):
         hp.resize(self.flen)
         hp = hp.astype(numpy.complex64)
         hp[self.kmin:-1] *= self.w
-        s = float(1.0 / pycbc.filter.sigmasq(hp,
-                                              low_frequency_cutoff=self.f_lower) ** 0.5)
+        s = float(1.0 / pycbc.filter.sigmasq(hp,low_frequency_cutoff=self.f_lower) ** 0.5)
         hp *= s
         hp.params = kwds
         hp.view = hp[self.kmin:-1]
@@ -157,6 +146,17 @@ def wf_wrapper(p):
     except Exception:
         return None
         
+class Shrinker(object):
+    def __init__(self, data):
+        self.indices = data
+
+    def pop(self):
+        if len(self.indices) == 0:
+            return None
+        l = self.indices[-1]
+        self.indices = self.indices[:-1]
+        return l
+    
 class TriangleBank(object):
     """A bank of templates that uses the triangle inequality to estimate
     matches based on prior ones.
@@ -174,7 +174,9 @@ class TriangleBank(object):
         self.tbins = {}
         self.enable_sigma_bound = args.enable_sigma_bound
         self.tau0_threshold = args.tau0_threshold
+        self.tau0_cutoff_frequency = args.tau0_cutoff_frequency
         self.nprocesses = args.nprocesses
+        self.minimal_match = args.minimal_match
 
     def __len__(self):
         return len(self.waveforms)
@@ -186,24 +188,6 @@ class TriangleBank(object):
                 i += 1
         return i
 
-    def insert(self, hp):
-        """
-        Inserts a waveform into the search bank.
-
-        Parameters:
-        hp (Waveform): The waveform to be inserted.
-
-        Returns:
-        None
-        """
-        self.waveforms.append(hp)
-
-        for b in [hp.tbin - 1, hp.tbin, hp.tbin + 1]:
-            if b in self.tbins:
-                self.tbins[b].append(len(self)-1)
-            else:
-                self.tbins[b] = [len(self)-1]
-
     def __getitem__(self, index):
         return self.waveforms[index]
 
@@ -213,12 +197,22 @@ class TriangleBank(object):
     def key(self, k):
         return numpy.array([p.params[k] for p in self.waveforms])
 
-    def sigma_match_bound(self, sig):
+    def sigma_ratio(self, newhp_sig):
+        """
+        Calculates the match bound between the stored waveforms and a new waveform.
+
+        Parameters:
+            newhp_sig (float): The optimal SNR of the new waveform.
+
+        Returns:
+            numpy.ndarray: An array containing the match bound values for each stored waveform.
+
+        """
         if not hasattr(self, 'sigma'):
             self.sigma = None
         if self.sigma is None or len(self.sigma) != len(self):
             self.sigma = numpy.array([h.s for h in self.waveforms])
-        return numpy.minimum(sig / self.sigma, self.sigma / sig)
+        return self.sigma / newhp_sig
 
     def range(self):
         if not hasattr(self, 'r'):
@@ -256,61 +250,64 @@ class TriangleBank(object):
         Returns:
             bool: True if the waveform is contained in the bank, False otherwise.
         """
-        mmax = 0
-        mnum = 0
         # Apply sigmas maximal match.
         if self.enable_sigma_bound:
-            matches = self.sigma_match_bound(newhp.s)
-            r = self.range()[matches > newhp.threshold]
+            sr = self.sigma_ratio(newhp.s)
+            sigma_range = self.range()[(sr > 0.5) & (sr < 1.5)]
         else:
-            matches = numpy.ones(len(self))
-            r = self.range()
-
-        msig = len(r)
+            sigma_range = self.range()
+        nsig = len(sigma_range)
 
         # Apply tau0 threshold
         if self.tau0_threshold:
             newhp.tau0 = pycbc.conversions.tau0_from_mass1_mass2(
                                             newhp.params['mass1'],
                                             newhp.params['mass2'],
-                                            15)
+                                            self.tau0_cutoff_frequency)
             newhp.tbin = int(newhp.tau0 / self.tau0_threshold)
 
             if newhp.tbin in self.tbins:
-                r = numpy.array(self.tbins[newhp.tbin])
+                tau0_range = numpy.array(self.tbins[newhp.tbin])
             else:
-                r = r[:0]
+                tau0_range = self.range()[:0]
+        else:
+            tau0_range = self.range()
+        ntau = len(tau0_range)
 
-        mtau = len(r)
+        r = numpy.intersect1d(sigma_range, tau0_range) # r is the one to be checked        
+        neighbor = Shrinker(r*1)
 
+        maxmatch_matrix = numpy.ones(len(self))
         # Try to do some actual matches
-        inc = Shrinker(r*1)
+        mmax = 0
+        mnum = 0
         while 1:
-            j = inc.pop()
+            j = neighbor.pop()
             if j is None:
-                newhp.matches = matches[r]
+                newhp.maxmatch_matrix_r = maxmatch_matrix[r]
                 newhp.indices = r
                 logging.info("Add (%i/%i) into the bank. BankSize:%i "
                              "AfterSigma:%i AfterTau0:%i AfterTriangle:%i, MaxMatch:%0.3f"
                               % (newhp.num_tried, newhp.total_num,
-                                 len(self), msig, mtau, mnum, mmax))
+                                 len(self), nsig, ntau, mnum, mmax))
                 return False
 
             oldhp = self[j]
             m = gen.match(newhp, oldhp)
-            matches[j] = m
+            maxmatch_matrix[j] = m
             mnum += 1
 
-            # Update bounding match values, apply triangle inequality
-            maxmatches = oldhp.matches - m + 1.10
-            update = numpy.where(maxmatches < matches[oldhp.indices])[0]
-            matches[oldhp.indices[update]] = maxmatches[update]
+            # Update bounding match values, apply triangle inequality, consider newhp, oldhp and others
+            newhp_other_maxmatch = oldhp.maxmatch_matrix_r - m + 1.10
+            update = numpy.where(newhp_other_maxmatch < maxmatch_matrix[oldhp.indices])[0]
+            maxmatch_matrix[oldhp.indices[update]] = newhp_other_maxmatch[update]
+            # oldhp.indices: absolute index of the waveform in the bank
 
             # Update where to calculate matches
-            skip_threshold = 1 - (1 - newhp.threshold) * 2.0
-            inc.data = inc.data[matches[inc.data] > skip_threshold]
+            skip_threshold = 1 - (1 - self.minimal_match) * 2.0
+            neighbor.indices = neighbor.indices[maxmatch_matrix[neighbor.indices] > skip_threshold]
 
-            if m > newhp.threshold:
+            if m > self.minimal_match:
                 return True
             if m > mmax:
                 mmax = m
@@ -334,17 +331,25 @@ class TriangleBank(object):
             hp.tbin = int(hp.tau0 / self.tau0_threshold)
             self.insert(hp)
 
-    def check_params(self, params, threshold):
+    def insert(self, hp):
         """
-        Check the parameters and add valid waveforms to the bank.
+        Inserts a waveform into the search bank.
 
-        Args:
-            params (dict): A dictionary of parameter values.
-            threshold (float): The threshold value.
+        Parameters:
+        hp (Waveform): The waveform to be inserted.
 
         Returns:
-            tuple: A self class containing the updated bank and the fraction of waveforms added.
+        None
         """
+        self.waveforms.append(hp)
+
+        for b in [hp.tbin - 1, hp.tbin, hp.tbin + 1]:
+            if b in self.tbins:
+                self.tbins[b].append(len(self)-1)
+            else:
+                self.tbins[b] = [len(self)-1]
+
+    def check_params(self, params):
         total_num = len(tuple(params.values())[0])        
         waveform_cache = []
         with multiprocessing.Pool(self.nprocesses) as pool:
@@ -357,7 +362,7 @@ class TriangleBank(object):
         num_added = 0
         for i, hp in enumerate(waveform_cache):
             if hp is not None:
-                hp.threshold = threshold
+                #hp.threshold = threshold
                 hp.num_tried = i + 1
                 hp.total_num = total_num
                 if hp not in self:
@@ -532,7 +537,7 @@ def main():
     if args.input_file:
         f = h5py.File(args.input_file, 'r')
         params = {k: f[k][:] for k in f}
-        bank, _ = bank.check_params(gen, params, args.minimal_match)
+        bank, _ = bank.check_params(gen, params)
         f.close()
     
     mass = {}
@@ -542,8 +547,8 @@ def main():
             mass['mass1'] = [pmin, pmax]
         elif name == 'mass2':
             mass['mass2'] = [pmin, pmax]
-    taumin = tau0_from_mass1_mass2(mass['mass1'][0], mass['mass2'][0], args.tau0_cutoff_frequency)
-    taumax = tau0_from_mass1_mass2(mass['mass1'][1], mass['mass2'][1], args.tau0_cutoff_frequency)
+    taumax = tau0_from_mass1_mass2(mass['mass1'][0], mass['mass2'][0], args.tau0_cutoff_frequency)
+    taumin = tau0_from_mass1_mass2(mass['mass1'][1], mass['mass2'][1], args.tau0_cutoff_frequency)
 
     logging.info("Starting to generate stochastic proposals")
     tau0s = args.tau0_start
@@ -557,9 +562,9 @@ def main():
             params = cdraw('uniform', tau0s, tau0e, args, bank)
             if params is None:
                 break
-
+            
             blen = len(bank)
-            bank, uaccept = bank.check_params(params, args.minimal_match)
+            bank, uaccept = bank.check_params(params)
             logging.info("tau0 %3.1f-%3.1f: uniform(round %s) finished! "
                          "banksize:%s accept:%s added:%s\n",
                          tau0s, tau0e, loop, len(bank), uaccept, len(bank) - blen)
@@ -578,7 +583,7 @@ def main():
                 params = cdraw('kde', tau0s, tau0e, args, bank)
                 blen = len(bank)
                 
-                bank, kaccept = bank.check_params(params, args.minimal_match)
+                bank, kaccept = bank.check_params(params)
                 if kloop == 1:
                     initial_kaccept = kaccept
                 logging.info("tau0 %3.1f-%3.1f: KDE(round %s in total %s) finished! "
