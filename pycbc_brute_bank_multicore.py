@@ -495,6 +495,28 @@ def cdraw(rtype, ts, te, args, bank):
 
     return p
 
+def adjustmass(args, tau0s, tau0e):
+    for name, pmin, pmax in zip(args.params, args.min, args.max):
+        if name == 'mass1':
+            mass1min = pmin
+            mass1max = pmax
+        elif name == 'mass2':
+            massmin = pmin
+            massmax = pmax
+    assert mass1min == massmin, "mass1min and mass2min should be the same"
+    assert mass1max == massmax, "mass1max and mass2max should be the same"
+    
+    while tau0_from_mass1_mass2(massmin, min(massmin * args.max_q, massmax), args.tau0_cutoff_frequency) > tau0e and massmin < massmax:
+        massmin += 0.1
+    while tau0_from_mass1_mass2(massmax, max(massmax/args.max_q, massmin), args.tau0_cutoff_frequency) < tau0s and massmax > massmin:
+        massmax -= 0.1
+
+    for i, name in enumerate(args.params):
+        if name == 'mass1' or name == 'mass2':
+            args.min[i] = max(massmin - 1, mass1min)
+            args.max[i] = min(massmax + 1, mass1max)
+    return args.min, args.max
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     pycbc.add_common_pycbc_options(parser)
@@ -579,10 +601,14 @@ def main():
     taumax = tau0_from_mass1_mass2(mass['mass1'][0], mass['mass2'][0], args.tau0_cutoff_frequency)
     taumin = tau0_from_mass1_mass2(mass['mass1'][1], mass['mass2'][1], args.tau0_cutoff_frequency)
 
-    logging.info("Starting to generate stochastic proposals")
     tau0s = args.tau0_start
     tau0e = tau0s + args.tau0_crawl
-    while tau0e <= args.tau0_end:
+    logging.info("Starting to generate stochastic proposals, initial tau0s: %3.3f, tau0e: %3.3f, argstau0end: %3.3f", tau0s, tau0e, args.tau0_end)
+    while tau0e <= args.tau0_end + 0.00000001:
+        logging.info("tau0s, tau0e: %3.2f-%3.2f", tau0s, tau0e)
+        args.min, args.max = adjustmass(args, tau0s, tau0e)
+        for name, pmin, pmax in zip(args.params, args.min, args.max):
+            logging.info("parameter %s: %3.3f-%3.3f", name, pmin, pmax)
         accept = 1
         loop = 0
         while accept > args.tolerance and tau0s < taumax and tau0e > taumin:
