@@ -26,6 +26,7 @@ import argparse
 import pickle
 import numpy.random
 from scipy.stats import gaussian_kde
+from functools import reduce
 
 import pycbc.waveform, pycbc.filter, pycbc.types, pycbc.psd, pycbc.fft, pycbc.conversions
 import pycbc.pool
@@ -34,7 +35,6 @@ import multiprocessing
 
 import lal
 import lalsimulation as lalsim
-from sklearn import neighbors
 
 class GenUniformWaveform(object):
     """
@@ -99,6 +99,8 @@ class GenUniformWaveform(object):
             hp, _ = pycbc.waveform.get_fd_waveform(delta_f=self.delta_f,
                                                    f_lower=self.f_lower,
                                                    **kwds)
+            if hasattr(hp, 'eob_template_duration'):
+                duration = hp.eob_template_duration
         except Exception as e:
             logging.info("Waveform generation failed: %s", e)
             return None
@@ -111,6 +113,8 @@ class GenUniformWaveform(object):
         hp.params = kwds
         hp.view = hp[self.kmin:-1]
         hp.s = (1.0 / s) ** 2.0
+        if duration:
+            hp.params['template_duration'] = duration
         return hp
 
     def match(self, hp, hc):
@@ -143,7 +147,8 @@ def wf_wrapper(p):
     try:
         hp = gen.generate(**p)
         return hp
-    except Exception:
+    except Exception as e:
+        logging.info("Waveform generation failed: %s", e)
         return None
         
 class Shrinker(object):
@@ -173,6 +178,12 @@ class TriangleBank(object):
         self.waveforms = p if p is not None else []
         self.tbins = {}
         self.enable_sigma_bound = args.enable_sigma_bound
+        self.enable_template_duration_bound = args.enable_template_duration_bound
+        if self.enable_sigma_bound:
+            self.sigma_bound_min = args.sigma_bound_min
+            self.sigma_bound_max = args.sigma_bound_max
+        if self.enable_template_duration_bound:
+            self.template_duration_bound_max = args.template_duration_bound_max
         self.tau0_threshold = args.tau0_threshold
         self.tau0_cutoff_frequency = args.tau0_cutoff_frequency
         self.nprocesses = args.nprocesses
@@ -213,7 +224,14 @@ class TriangleBank(object):
         if self.sigma is None or len(self.sigma) != len(self):
             self.sigma = numpy.array([h.s for h in self.waveforms])
         return self.sigma / newhp_sig
-
+    
+    def duration_diff(self, newhp):
+        if not hasattr(self, 'duration'):
+            self.duration = None
+        if self.duration is None or len(self.duration) != len(self):
+            self.duration = numpy.array([h.params['template_duration'] for h in self])
+        return numpy.abs(self.duration - newhp.params['template_duration'])
+    
     def range(self):
         if not hasattr(self, 'r'):
             self.r = None
@@ -253,7 +271,7 @@ class TriangleBank(object):
         # Apply sigmas maximal match.
         if self.enable_sigma_bound:
             sr = self.sigma_ratio(newhp.s)
-            sigma_range = self.range()[(sr > 0.5) & (sr < 1.5)]
+            sigma_range = self.range()[(sr > self.sigma_bound_min) & (sr < self.sigma_bound_max)]
         else:
             sigma_range = self.range()
         nsig = len(sigma_range)
@@ -274,7 +292,14 @@ class TriangleBank(object):
             tau0_range = self.range()
         ntau = len(tau0_range)
 
-        r = numpy.intersect1d(sigma_range, tau0_range) # r is the one to be checked        
+        if self.enable_template_duration_bound:
+            dur_diff = self.duration_diff(newhp)
+            dur_range = self.range()[dur_diff < self.template_duration_bound_max]
+        else:
+            dur_range = self.range()
+        ndur = len(dur_range)
+
+        r = reduce(numpy.intersect1d, (sigma_range, tau0_range, dur_range))# r is the one to be checked        
         neighbor = Shrinker(r*1)
 
         maxmatch_matrix = numpy.ones(len(self))
@@ -287,9 +312,9 @@ class TriangleBank(object):
                 newhp.maxmatch_matrix_r = maxmatch_matrix[r]
                 newhp.indices = r
                 logging.info("Add (%i/%i) into the bank. BankSize:%i "
-                             "AfterSigma:%i AfterTau0:%i AfterTriangle:%i, MaxMatch:%0.3f"
+                             "Sigma:%i Tau0:%i Dur:%i, Triangle:%i, MaxMatch:%0.3f"
                               % (newhp.num_tried, newhp.total_num,
-                                 len(self), nsig, ntau, mnum, mmax))
+                                 len(self), nsig, ntau, ndur, mnum, mmax))
                 return False
 
             oldhp = self[j]
@@ -504,6 +529,10 @@ def main():
         help='sample rate in seconds')
     parser.add_argument('--low-frequency-cutoff', default=20.0, type=float)
     parser.add_argument('--enable-sigma-bound', action='store_true')
+    parser.add_argument('--sigma-bound-min', type=float)
+    parser.add_argument('--sigma-bound-max', type=float)
+    parser.add_argument('--enable-template-duration-bound', action='store_true')
+    parser.add_argument('--template-duration-bound-max', type=float)
     parser.add_argument('--tau0-threshold', type=float, help='threshold to separate two waveforms')
     parser.add_argument('--placement-iterations', default=1000, type=int, 
         help='Specify the number of attempts the bank should make when placing points. Use this option if the bank fails to place any points.')
