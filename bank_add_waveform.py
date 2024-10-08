@@ -3,10 +3,8 @@ warnings.filterwarnings("ignore", "Wswiglal-redir-stdio")
 
 import numpy as np
 import numpy
-import pandas as pd
 import h5py
 from argparse import ArgumentParser
-from pyseobnr.generate_waveform import GenerateWaveform
 
 import pycbc.conversions
 import pycbc.distributions
@@ -92,6 +90,7 @@ def main():
                         help="Path to output bank with waveforms.")
     parser.add_argument('--nprocesses', type=int, default=1,
                         help="Number of processes to use for waveform generation parallelization.")
+    parser.add_argument('--add-sigma', action='store_true',help="Add sigma to the bank")
     args = parser.parse_args()
 
     # initialize a waveform generator
@@ -114,11 +113,18 @@ def main():
             wf_wrapper,
             ({k: p[k][idx] for k in p.keys()} for idx in tqdm(range(len(p['approximant']))))
             ):
-            waveform_cache[return_i] = [return_hp]
+            waveform_cache[return_i] = return_hp
 
+    if args.add_sigma:
+        # add sigma to the bank
+        sorti = np.argsort(list(waveform_cache.keys()))
+        s = np.array([h.s for h in waveform_cache.values()])[sorti]
+        with h5py.File(args.bank,'a') as f_bank:
+            f_bank['s'] = s
+    
     # dump the waveforms
     for ii in tqdm(waveform_cache.keys()):
-        waveform_cache[ii][0].save(args.output,group=str(ii))
+        waveform_cache[ii].save(args.output,group=str(ii))
 
 if __name__ == "__main__":
     main()

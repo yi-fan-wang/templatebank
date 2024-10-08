@@ -1,12 +1,7 @@
 import numpy as np
-import numpy
-import pandas as pd
 import h5py
 from argparse import ArgumentParser
 
-import pycbc.conversions
-import pycbc.distributions
-import pycbc.waveform, pycbc.filter, pycbc.types, pycbc.psd, pycbc.fft
 from pyseobnr.generate_waveform import GenerateWaveform
 
 from tqdm import tqdm
@@ -60,7 +55,8 @@ def main():
     with h5py.File(args.output,'w') as f_write:
         with h5py.File(args.bank,'r') as f_bank:
             for k in f_bank.keys():
-                f_write[k] = f_bank[k][()]
+                if k != 'template_duration':
+                    f_write[k] = f_bank[k][()]
         # https://github.com/h5py/h5py/issues/1329
         f_write['template_duration'] = duration
 
