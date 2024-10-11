@@ -35,7 +35,8 @@ import multiprocessing
 
 import lal
 import lalsimulation as lalsim
-
+import sys
+import time
 class GenUniformWaveform(object):
     """
     A class for generating uniform waveforms.
@@ -464,6 +465,8 @@ def draw(rtype, args, bank):
         from pycbc.conversions import mchirp_from_mass1_mass2
         mc = mchirp_from_mass1_mass2(params['mass1'], params['mass2'])
         l &= mc > args.min_mchirp
+    if args.ecc_constraint:
+        l &= ((params['eccentricity'] < 0.3) & ((params['mass1'] < 15) | (params['mass2']<15))) | ((params['mass1'] >= 15) & (params['mass2'] >= 15))
 
     params = {k: params[k][l] for k in params}
     return params
@@ -540,6 +543,7 @@ def main():
     parser.add_argument('--min-mchirp', type=float, help='minimum chirp mass')
     parser.add_argument('--max-mchirp', type=float, help='maximum chirp mass')
     parser.add_argument('--max-q', type=float, help='maximum mass ratio')
+    parser.add_argument('--ecc-constraint', action='store_true', help='ecc constraint')
     # proposal generation
     parser.add_argument('--minimal-match', default=0.97, type=float, 
         help='minimal match of SNR due to discreteness of the template bank')
@@ -570,6 +574,8 @@ def main():
     parser.add_argument('--nprocesses', type=int, default=1,
         help='Number of processes to use for waveform generation parallelization. If not given then only a single core will be used.')
     parser.add_argument('--seed', type=int, default=0)
+    # checkpointing
+    parser.add_argument('--checkpoint-time', type=float, default=5000, help='checkpoint the bank')
     
     pycbc.psd.insert_psd_option_group(parser)
     args = parser.parse_args()
@@ -585,11 +591,6 @@ def main():
     global gen
     gen = GenUniformWaveform(args.buffer_length, args.sample_rate, args.low_frequency_cutoff)
     bank = TriangleBank(args)
-    if args.input_file:
-        f = h5py.File(args.input_file, 'r')
-        params = {k: f[k][:] for k in f}
-        bank, _ = bank.check_params(gen, params)
-        f.close()
     
     mass = {}
     # check if the tau0 range is proper
@@ -603,15 +604,39 @@ def main():
 
     tau0s = args.tau0_start
     tau0e = tau0s + args.tau0_crawl
-    logging.info("Starting to generate stochastic proposals, initial tau0s: %3.3f, tau0e: %3.3f, argstau0end: %3.3f", tau0s, tau0e, args.tau0_end)
+    logging.info("Starting to generate stochastic proposals, initial tau0s: %3.2f, initialtau0e: %3.2f, tau0end: %3.2f", tau0s, tau0e, args.tau0_end)
     while tau0e <= args.tau0_end + 0.00000001:
         logging.info("tau0s, tau0e: %3.2f-%3.2f", tau0s, tau0e)
+        
+        if args.input_file:
+            if tau0s == args.tau0_start:
+                taubanks = tau0s - args.tau0_threshold
+                taubanke = tau0e + args.tau0_threshold
+            else:
+                taubanks = taubanke 
+                taubanke = tau0e + args.tau0_threshold
+            logging.info("Adding the existing bank in tau0 range %3.2f-%3.2f", taubanks, taubanke)
+            ilength = len(bank)
+            f = h5py.File(args.input_file, 'r')
+            t = tau0_from_mass1_mass2(f['mass1'][:], f['mass2'][:], args.tau0_cutoff_frequency)
+            l = (t <= taubanke) & (t >= taubanks)
+            params = {k: f[k][l] for k in f.keys() if k!= 'f_lower' and k!='s' and k!='template_duration'}
+            params['approximant'] = numpy.array([v.decode() for v in params['approximant']])
+
+            if len(tuple(params.values())[0]) > 0:
+                logging.info('Adding %s waveforms from the existing bank', len(tuple(params.values())[0]))
+                bank, _ = bank.check_params(params)
+            f.close()
+            logging.info("Existing bank added, banksize: %s, adding: %s", len(bank), len(bank)-ilength)
+            
         args.min, args.max = adjustmass(args, tau0s, tau0e)
         for name, pmin, pmax in zip(args.params, args.min, args.max):
             logging.info("parameter %s: %3.3f-%3.3f", name, pmin, pmax)
+        
         accept = 1
         loop = 0
         while accept > args.tolerance and tau0s < taumax and tau0e > taumin:
+            current_time = time.time()
             # Standard Round
             loop += 1
             params = cdraw('uniform', tau0s, tau0e, args, bank)
@@ -650,25 +675,40 @@ def main():
                     accept = kaccept
                     break
 
+                if time.time() - current_time > args.checkpoint_time:
+                    logging.info("Checkpointing bank")
+                    finalize(args, bank, checkpoint=True)
+                    current_time = time.time()
+
         bank.culltau0(tau0s - args.tau0_threshold * 2.0)
         logging.info("Region Done %3.1f-%3.1f, %s stored", tau0s, tau0e, bank.activelen())
 
         tau0s += args.tau0_crawl / 2
         tau0e += args.tau0_crawl / 2
-    
-    o = h5py.File(args.output_file, 'w')
+
+    finalize(args, bank)
+
+def finalize(args, bank, checkpoint=False):
+    if checkpoint:
+        o = h5py.File('checkpoint_'+args.output_file, 'w')
+    else:
+        o = h5py.File(args.output_file, 'w')
     o.attrs['minimal_match'] = args.minimal_match
 
     if len(bank) == 0:
-        logging.info("No waveforms generated. Exiting.")
-        return None
-
-    for k in bank.keys():
-        val = bank.key(k)
-        if val.dtype.char == 'U':
-            val = val.astype('bytes')
-        o[k] = val
-    o['f_lower'] = numpy.array([args.low_frequency_cutoff] * len(bank))
+        if checkpoint:
+            logging.info("No waveforms generated. Checkpointing.")
+            return
+        else:
+            logging.info("No waveforms generated. Exiting.")
+            sys.exit()
+    else:
+        for k in bank.keys():
+            val = bank.key(k)
+            if val.dtype.char == 'U':
+                val = val.astype('bytes')
+            o[k] = val
+        o['f_lower'] = numpy.array([args.low_frequency_cutoff] * len(bank))
 
 if __name__ == '__main__':
     main()
