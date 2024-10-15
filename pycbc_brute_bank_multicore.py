@@ -1,45 +1,26 @@
-#!/usr/bin/env python
-
-# Copyright (C) 2017 Alex Nitz, Duncan Macleod
-#               2022 Shichao Wu
-#
-# This program is free software; you can redistribute it and/or modify it
-# under the terms of the GNU General Public License as published by the
-# Free Software Foundation; either version 3 of the License, or (at your
-# option) any later version.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
-# Public License for more details.
-#
-# You should have received a copy of the GNU General Public License along
-# with this program; if not, write to the Free Software Foundation, Inc.,
-# 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-
 """Generate a bank of templates using a brute force stochastic method.
 """
-import numpy
-import h5py
-import logging
-import argparse
-import pickle
-import numpy.random
+import numpy, h5py
+import logging, argparse, time, sys
 from scipy.stats import gaussian_kde
-from functools import reduce
 
 import pycbc.waveform, pycbc.filter, pycbc.types, pycbc.psd, pycbc.fft, pycbc.conversions
-import pycbc.pool
 from pycbc.conversions import tau0_from_mass1_mass2
 import multiprocessing
 
-import lal
-import lalsimulation as lalsim
-import sys
-import time
+#import warnings
+#import lal
+#import lalsimulation as lalsim
+
+from tqdm import tqdm
+import logging.config
+#import pyseobnr.models.SEOBNRv5EHM
+#import pyseobnr.eob.dynamics.integrate_ode_ecc
+#import pyseobnr.eob.dynamics.initial_conditions_aligned_ecc_opt
+
 class GenUniformWaveform(object):
     """
-    A class for generating uniform waveforms.
+    A class for generating waveforms.
 
     Args:
         buffer_length (int): The length of the buffer.
@@ -63,15 +44,19 @@ class GenUniformWaveform(object):
 
     """
 
-    def __init__(self, buffer_length, sample_rate, f_lower):
+    def __init__(self, buffer_length, sample_rate, f_lower, 
+                    psd_path = '/work/yifanwang/ecc/templatebank/o3psd.txt'):
         self.f_lower = f_lower
         self.delta_f = 1.0 / buffer_length
         tlen = int(buffer_length * sample_rate)
         self.flen = tlen // 2 + 1
         
         #psd is hard coded to O3 psd
-        psd = pycbc.psd.read.from_txt('/work/yifanwang/ecc/templatebank/o3psd.txt', 
-            self.flen, self.delta_f, self.f_lower, is_asd_file = False)
+        psd = pycbc.psd.read.from_txt(psd_path,
+                                      self.flen,
+                                      self.delta_f,
+                                      self.f_lower,
+                                      is_asd_file = False)
         
         self.kmin = int(f_lower * buffer_length)
         self.w = ((1.0 / psd[self.kmin:-1]) ** 0.5).astype(numpy.float32)
@@ -119,32 +104,12 @@ class GenUniformWaveform(object):
         return hp
 
     def match(self, hp, hc):
-        """
-        Computes the match between two waveforms.
-
-        Args:
-            hp (pycbc.waveform.Waveform): The first waveform.
-            hc (pycbc.waveform.Waveform): The second waveform.
-
-        Returns:
-            float: The match between the two waveforms.
-
-        """
         pycbc.filter.correlate(hp.view, hc.view, self.qtilde_view)
         self.ifft.execute()
         m = max(abs(self.md).max(), abs(self.md2).max())
         return m * 4.0 * self.delta_f
 
 def wf_wrapper(p):
-    """
-    Wrapper function for generating waveform using the `gen.generate` method.
-
-    Parameters:
-    p (dict): A dictionary containing the waveform generation parameters.
-
-    Returns:
-    numpy.ndarray or None: The generated waveform if successful, None otherwise.
-    """
     try:
         hp = gen.generate(**p)
         return hp
@@ -166,27 +131,23 @@ class Shrinker(object):
 class TriangleBank(object):
     """A bank of templates that uses the triangle inequality to estimate
     matches based on prior ones.
-
-    Attributes:
-        waveforms (list): List of waveform templates.
-        tbins (dict): Dictionary mapping time bins to waveform indices.
-        enable_sigma_bound (bool): Flag indicating whether to enable sigma match bound.
-        tau0_threshold (float): Threshold for tau0.
-        nprocesses (int): Number of processes for waveform generation.
     """
+    def __init__(self, args):
+        self.waveforms = []
+        self.tbins = {} # tau0 bins
+        self.tau0 = numpy.array([])
 
-    def __init__(self, args, p=None):
-        self.waveforms = p if p is not None else []
-        self.tbins = {}
-        self.enable_sigma_bound = args.enable_sigma_bound
-        self.enable_template_duration_bound = args.enable_template_duration_bound
-        if self.enable_sigma_bound:
-            self.sigma_bound_min = args.sigma_bound_min
-            self.sigma_bound_max = args.sigma_bound_max
-        if self.enable_template_duration_bound:
-            self.template_duration_bound_max = args.template_duration_bound_max
         self.tau0_threshold = args.tau0_threshold
         self.tau0_cutoff_frequency = args.tau0_cutoff_frequency
+        
+        self.sigma_threshold = args.sigma_threshold
+        if self.sigma_threshold:
+            self.sigma = numpy.array([])
+            
+        self.template_duration_threshold = args.template_duration_threshold
+        if self.template_duration_threshold:
+            self.template_duration = numpy.array([])
+
         self.nprocesses = args.nprocesses
         self.minimal_match = args.minimal_match
 
@@ -209,30 +170,6 @@ class TriangleBank(object):
     def key(self, k):
         return numpy.array([p.params[k] for p in self.waveforms])
 
-    def sigma_ratio(self, newhp_sig):
-        """
-        Calculates the match bound between the stored waveforms and a new waveform.
-
-        Parameters:
-            newhp_sig (float): The optimal SNR of the new waveform.
-
-        Returns:
-            numpy.ndarray: An array containing the match bound values for each stored waveform.
-
-        """
-        if not hasattr(self, 'sigma'):
-            self.sigma = None
-        if self.sigma is None or len(self.sigma) != len(self):
-            self.sigma = numpy.array([h.s for h in self.waveforms])
-        return self.sigma / newhp_sig
-    
-    def duration_diff(self, newhp):
-        if not hasattr(self, 'duration'):
-            self.duration = None
-        if self.duration is None or len(self.duration) != len(self):
-            self.duration = numpy.array([h.params['template_duration'] for h in self])
-        return numpy.abs(self.duration - newhp.params['template_duration'])
-    
     def range(self):
         if not hasattr(self, 'r'):
             self.r = None
@@ -241,139 +178,18 @@ class TriangleBank(object):
         return self.r
 
     def culltau0(self, threshold):
-        cull = numpy.where(self.tau0() < threshold)[0]
-
+        """cull waveforms with tau0 less than threshold"""
         class dumb(object):
             pass
+        
+        t0 = numpy.array([h.tau0 for h in self])
+        cull = numpy.where(t0 < threshold)[0]
         for c in cull:
             d = dumb()
             d.tau0 = self.waveforms[c].tau0
             d.params = self.waveforms[c].params
             d.s = self.waveforms[c].s
             self.waveforms[c] = d
-
-    def tau0(self):
-        if not hasattr(self, 't0'):
-            self.t0 = None
-        if self.t0 is None or len(self.t0) != len(self):
-            self.t0 = numpy.array([h.tau0 for h in self])
-        return self.t0
-
-    def __contains__(self, newhp):
-        """
-        Check if a waveform is contained in the bank.
-
-        Args:
-            newhp (Waveform): The newly added waveform.
-
-        Returns:
-            bool: True if the waveform is contained in the bank, False otherwise.
-        """
-        # Apply sigmas maximal match.
-        if self.enable_sigma_bound:
-            sr = self.sigma_ratio(newhp.s)
-            sigma_range = self.range()[(sr > self.sigma_bound_min) & (sr < self.sigma_bound_max)]
-        else:
-            sigma_range = self.range()
-        nsig = len(sigma_range)
-
-        # Apply tau0 threshold
-        if self.tau0_threshold:
-            newhp.tau0 = pycbc.conversions.tau0_from_mass1_mass2(
-                                            newhp.params['mass1'],
-                                            newhp.params['mass2'],
-                                            self.tau0_cutoff_frequency)
-            newhp.tbin = int(newhp.tau0 / self.tau0_threshold)
-
-            if newhp.tbin in self.tbins:
-                tau0_range = numpy.array(self.tbins[newhp.tbin])
-            else:
-                tau0_range = self.range()[:0]
-        else:
-            tau0_range = self.range()
-        ntau = len(tau0_range)
-
-        if self.enable_template_duration_bound:
-            dur_diff = self.duration_diff(newhp)
-            dur_range = self.range()[dur_diff < self.template_duration_bound_max]
-        else:
-            dur_range = self.range()
-        ndur = len(dur_range)
-
-        r = reduce(numpy.intersect1d, (sigma_range, tau0_range, dur_range))# r is the one to be checked        
-        neighbor = Shrinker(r*1)
-
-        maxmatch_matrix = numpy.ones(len(self))
-        # Try to do some actual matches
-        mmax = 0
-        mnum = 0
-        while 1:
-            j = neighbor.pop()
-            if j is None:
-                newhp.maxmatch_matrix_r = maxmatch_matrix[r]
-                newhp.indices = r
-                logging.info("Add (%i/%i) into the bank. BankSize:%i "
-                             "Sigma:%i Tau0:%i Dur:%i, Triangle:%i, MaxMatch:%0.3f"
-                              % (newhp.num_tried, newhp.total_num,
-                                 len(self), nsig, ntau, ndur, mnum, mmax))
-                return False
-
-            oldhp = self[j]
-            m = gen.match(newhp, oldhp)
-            maxmatch_matrix[j] = m
-            mnum += 1
-
-            # Update bounding match values, apply triangle inequality, consider newhp, oldhp and others
-            newhp_other_maxmatch = oldhp.maxmatch_matrix_r - m + 1.10
-            update = numpy.where(newhp_other_maxmatch < maxmatch_matrix[oldhp.indices])[0]
-            maxmatch_matrix[oldhp.indices[update]] = newhp_other_maxmatch[update]
-            # oldhp.indices: absolute index of the waveform in the bank
-
-            # Update where to calculate matches
-            skip_threshold = 1 - (1 - self.minimal_match) * 2.0
-            neighbor.indices = neighbor.indices[maxmatch_matrix[neighbor.indices] > skip_threshold]
-
-            if m > self.minimal_match:
-                return True
-            if m > mmax:
-                mmax = m
-    
-    def add_existing_bank(self, params, tau0_start, tau0_end):
-        """
-        Add an existing bank to the current bank.
-
-        Args:
-            params (dict): A dictionary of parameter values.
-            tau0_start (float): The starting value of tau0.
-            tau0_end (float): The ending value of tau0.
-
-        Returns:
-            None
-        """
-        for p in params:
-            hp = pycbc.types.FrequencySeries(numpy.zeros(gen.flen, dtype=numpy.complex64))
-            hp.params = p
-            hp.tau0 = tau0_from_mass1_mass2(p['mass1'], p['mass2'], 15)
-            hp.tbin = int(hp.tau0 / self.tau0_threshold)
-            self.insert(hp)
-
-    def insert(self, hp):
-        """
-        Inserts a waveform into the search bank.
-
-        Parameters:
-        hp (Waveform): The waveform to be inserted.
-
-        Returns:
-        None
-        """
-        self.waveforms.append(hp)
-
-        for b in [hp.tbin - 1, hp.tbin, hp.tbin + 1]:
-            if b in self.tbins:
-                self.tbins[b].append(len(self)-1)
-            else:
-                self.tbins[b] = [len(self)-1]
 
     def check_params(self, params):
         total_num = len(tuple(params.values())[0])        
@@ -388,7 +204,6 @@ class TriangleBank(object):
         num_added = 0
         for i, hp in enumerate(waveform_cache):
             if hp is not None:
-                #hp.threshold = threshold
                 hp.num_tried = i + 1
                 hp.total_num = total_num
                 if hp not in self:
@@ -397,33 +212,97 @@ class TriangleBank(object):
             else:
                 logging.info("%i/%i Waveform generation failed!", i, total_num)
                 continue
-
+        del waveform_cache
         return self, num_added / total_num
+    
+    def __contains__(self, newhp):
+        # Apply tau0 threshold
+        newhp.tau0 = pycbc.conversions.tau0_from_mass1_mass2(
+                                            newhp.params['mass1'],
+                                            newhp.params['mass2'],
+                                            self.tau0_cutoff_frequency)
+        newhp.tbin = int(newhp.tau0 / self.tau0_threshold)
+        if newhp.tbin in self.tbins:
+            match_range = numpy.array(self.tbins[newhp.tbin],dtype=int)
+            range = numpy.where(abs(self.tau0[match_range] - newhp.tau0) < self.tau0_threshold)[0]
+            match_range = match_range[range]
+        else:
+            match_range = numpy.array([],dtype=int)
+        ntau0 = len(match_range)
 
+        # Apply sigmas maximal match.
+        if self.sigma_threshold:
+            sr = self.sigma[match_range]/newhp.s
+            isr = newhp.s/self.sigma[match_range]
+            range = numpy.where(numpy.maximum(sr, isr) < self.sigma_threshold)[0]
+            match_range = match_range[range]
+        nsig = len(match_range)
 
-# Newtonian estimate of the merger time
-# Expression taken from Eq. (12) in https://arxiv.org/pdf/1911.06024
-def tecc_newtonian(mass1, mass2, e, fmin):
-    q = pycbc.conversions.q_from_mass1_mass2(mass1, mass2)
-    Mtot = mass1 + mass2
+        # Apply template duration bound
+        if self.template_duration_threshold:
+            t = newhp.params['template_duration']
+            range = numpy.where(abs(self.template_duration[match_range] - t) < self.template_duration_threshold)[0]
+            match_range = match_range[range]
+        ndur = len(match_range)
 
-    omega_start = numpy.pi * fmin * Mtot * lal.MTSUN_SI
-    # Use Kepler 3rd law
-    a0 = omega_start ** (-2 / 3.0)
+        neighbor = Shrinker(match_range)
+        maxmatch_matrix = numpy.ones(len(self))
+        match_matrix = numpy.array([])
+        match_matrix_indices = numpy.array([],dtype=int)
+        # Try to do some actual matches
+        mmax = 0
+        while 1:
+            j = neighbor.pop()
+            if j is None:
+                newhp.maxmatch_matrix_r = match_matrix
+                newhp.indices = match_matrix_indices
+                logging.info("Add (%i/%i) into the bank. BankSize:%i "
+                             "Tau0:%i Sigma:%i Dur:%i, Triangle:%i, MaxMatch:%0.3f"
+                              % (newhp.num_tried, newhp.total_num,
+                                 len(self), ntau0, nsig, ndur, len(match_matrix_indices), mmax))
+                return False
 
-    e2 = e * e
-    e4 = e2 * e2
+            oldhp = self[j]
+            m = gen.match(newhp, oldhp)
+            if m > self.minimal_match:
+                return True
+            if m > mmax:
+                mmax = m
+            
+            match_matrix_indices = numpy.append(match_matrix_indices, j)
+            match_matrix = numpy.append(match_matrix, m)
+            maxmatch_matrix[j] = m
 
-    f_e = (1.0 + (73.0 / 24) * e2 + (37.0 / 96.0) * e4) / (1 - e2) ** 3.5
-    t_merger = 5 * ((1 + q) ** 2) * (a0**4.0) / (256 * q * f_e)
-    t_merger_SI = t_merger * Mtot * lal.MTSUN_SI
+            # Update bounding match values, apply triangle inequality, consider newhp, oldhp and others
+            newhp_other_maxmatch = oldhp.maxmatch_matrix_r - m + 1.10
+            update = numpy.where(newhp_other_maxmatch < maxmatch_matrix[oldhp.indices])[0]
+            maxmatch_matrix[oldhp.indices[update]] = newhp_other_maxmatch[update]
+            # oldhp.indices: absolute index of the waveform in the bank
 
-    return t_merger_SI
+            # Update where to calculate matches
+            skip_threshold = 1 - (1 - self.minimal_match) * 2.0
+            neighbor.indices = neighbor.indices[maxmatch_matrix[neighbor.indices] > skip_threshold]
+    
+    def add_existing_bank(self, params, tau0_start, tau0_end):
+        for p in params:
+            hp = pycbc.types.FrequencySeries(numpy.zeros(gen.flen, dtype=numpy.complex64))
+            hp.params = p
+            hp.tau0 = tau0_from_mass1_mass2(p['mass1'], p['mass2'], 15)
+            hp.tbin = int(hp.tau0 / self.tau0_threshold)
+            self.insert(hp)
 
-def tecc_seobnrv5(mass1, mass2, e, s1z, s2z, fmin):
-
-    return lalsim.SimIMRSEOBNRv5ROMTimeOfFrequency(fmin, 
-                    mass1 * lal.MSUN_SI, mass2 * lal.MSUN_SI, s1z, s2z)
+    def insert(self, hp):
+        self.waveforms.append(hp)
+        for b in [hp.tbin - 1, hp.tbin, hp.tbin + 1]:
+            if b in self.tbins:
+                self.tbins[b].append(len(self)-1)
+            else:
+                self.tbins[b] = [len(self)-1]
+        self.tau0 = numpy.append(self.tau0, hp.tau0)
+        if self.sigma_threshold:
+            self.sigma = numpy.append(self.sigma, hp.s)
+        if self.template_duration_threshold:
+            self.template_duration = numpy.append(self.template_duration, hp.params['template_duration'])
 
 def draw(rtype, args, bank):
     '''Generate random parameters in each stochastic proposal
@@ -504,11 +383,12 @@ def adjustmass(args, tau0s, tau0e):
             mass1min = pmin
             mass1max = pmax
         elif name == 'mass2':
-            massmin = pmin
-            massmax = pmax
-    assert mass1min == massmin, "mass1min and mass2min should be the same"
-    assert mass1max == massmax, "mass1max and mass2max should be the same"
+            mass2min = pmin
+            mass2max = pmax
     
+    massmin = min(mass1min, mass2min)
+    massmax = max(mass1max, mass2max)
+
     while tau0_from_mass1_mass2(massmin, min(massmin * args.max_q, massmax), args.tau0_cutoff_frequency) > tau0e and massmin < massmax:
         massmin += 0.1
     while tau0_from_mass1_mass2(massmax, max(massmax/args.max_q, massmin), args.tau0_cutoff_frequency) < tau0s and massmax > massmin:
@@ -554,16 +434,13 @@ def main():
     parser.add_argument('--sample-rate', default=2048, type=float,
         help='sample rate in seconds')
     parser.add_argument('--low-frequency-cutoff', default=20.0, type=float)
-    parser.add_argument('--enable-sigma-bound', action='store_true')
-    parser.add_argument('--sigma-bound-min', type=float)
-    parser.add_argument('--sigma-bound-max', type=float)
-    parser.add_argument('--enable-template-duration-bound', action='store_true')
-    parser.add_argument('--template-duration-bound-max', type=float)
-    parser.add_argument('--tau0-threshold', type=float, help='threshold to separate two waveforms')
+    parser.add_argument('--sigma-threshold', type=float)
+    parser.add_argument('--template-duration-threshold', type=float)
+    parser.add_argument('--tau0-threshold', type=float, required=True, help='threshold to separate two waveforms')
     parser.add_argument('--placement-iterations', default=1000, type=int, 
         help='Specify the number of attempts the bank should make when placing points. Use this option if the bank fails to place any points.')
-    parser.add_argument('--tolerance', type=float)
-    parser.add_argument('--size', type=int,
+    parser.add_argument('--tolerance', type=float, required=True, help='tolerance for acceptance')
+    parser.add_argument('--size', type=int, required=True,
         help='Size of waveforms in each stochastic proposal.')
     # tau0 crawling parameters
     parser.add_argument('--tau0-crawl', type=float, help='step length tau0 would proceed')
@@ -576,17 +453,26 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     # checkpointing
     parser.add_argument('--checkpoint-time', type=float, default=5000, help='checkpoint the bank')
+    parser.add_argument('--adjust-mass', action='store_true', help='adjust mass range')
     
     pycbc.psd.insert_psd_option_group(parser)
     args = parser.parse_args()
 
+    for model in ["pyseobnr.models.SEOBNRv5EHM",
+                  "pyseobnr.eob.dynamics.integrate_ode_ecc",
+                  "pyseobnr.eob.dynamics.initial_conditions_aligned_ecc_opt"]:
+        logger = logging.getLogger(model)
+        logger.disabled = True
+    
     logger = logging.getLogger()
+    logger.setLevel(level=logging.INFO)
     logger.handlers.clear() # Clear existing handlers
+    #logger.propagate = False
     logging.basicConfig(level=logging.INFO, 
                         format='%(asctime)s: %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S')
-
-    numpy.random.seed(args.seed)
+    
+    numpy.random.seed(args.seed)    
 
     global gen
     gen = GenUniformWaveform(args.buffer_length, args.sample_rate, args.low_frequency_cutoff)
@@ -628,8 +514,9 @@ def main():
                 bank, _ = bank.check_params(params)
             f.close()
             logging.info("Existing bank added, banksize: %s, adding: %s", len(bank), len(bank)-ilength)
-            
-        args.min, args.max = adjustmass(args, tau0s, tau0e)
+
+        if args.adjust_mass:
+            args.min, args.max = adjustmass(args, tau0s, tau0e)
         for name, pmin, pmax in zip(args.params, args.min, args.max):
             logging.info("parameter %s: %3.3f-%3.3f", name, pmin, pmax)
         
