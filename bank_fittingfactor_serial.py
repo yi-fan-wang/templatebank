@@ -1,4 +1,3 @@
-from ast import arg
 import numpy as np
 import pandas as pd
 import h5py
@@ -63,7 +62,8 @@ class GenWaveform(object):
         hp /= s**0.5 
         
         hp.params = kwds
-        hp.s = s
+        #hp.s = s
+        hp.params['template_s'] = s
         if duration:
             hp.params['template_duration'] = duration
 
@@ -142,9 +142,9 @@ def main():
                               If not given then only a single core will be used.")
     parser.add_argument('--tau0-tolerance', type=float, default=0,
                         help="Size to measure the neighbors in the template bank of a particular injection")
-    parser.add_argument('--duration-tolerance', type=float, default=0,
+    parser.add_argument('--duration-tolerance', type=float,
                         help='Duration tolerance for the waveform generation')
-    parser.add_argument('--sigma-tolerance', type=float, default=0,
+    parser.add_argument('--sigma-tolerance', type=float,
                         help='Sigma tolerance for the waveform generation') 
     parser.add_argument('--use-parallel-match', action='store_true',help='Use parallel match calculation')
     parser.add_argument('--output', type=str, default='./fitfac.csv',
@@ -172,7 +172,7 @@ def main():
             'approximant': f['approximant'][:].astype('str'),
             'f_lower': f['f_lower'][:],
             'template_duration': f['template_duration'][:],
-            'sigma':f['s'][:]}
+            'sigma':f['template_s'][:]}
         )
     logging.info("Reading bank done in %s", datetime.datetime.now()-t_start)
 
@@ -203,8 +203,7 @@ def main():
     logging.info("Bank waveform generation done")
 
     # Generate simulated signals
-    inj = gen_injections()
-    inj_params = pd.DataFrame(inj.rvs(args.ninjections))
+    inj_params = pd.DataFrame(gen_injections().rvs(args.ninjections))
     inj_params['tau0'] = pycbc.conversions.tau0_from_mass1_mass2(inj_params['mass1'],inj_params['mass2'],15)
     inj_params['index'] = inj_params.index
     inj_params['approximant'] = params_bank['approximant'][0]
