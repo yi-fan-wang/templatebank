@@ -98,7 +98,8 @@ class GenUniformWaveform(object):
         hp *= s
         hp.params = kwds
         hp.view = hp[self.kmin:-1]
-        hp.s = (1.0 / s) ** 2.0
+        #hp.s = (1.0 / s) ** 2.0
+        hp.params['template_s'] = (1.0 / s) ** 2.0
         if duration:
             hp.params['template_duration'] = duration
         return hp
@@ -188,7 +189,7 @@ class TriangleBank(object):
             d = dumb()
             d.tau0 = self.waveforms[c].tau0
             d.params = self.waveforms[c].params
-            d.s = self.waveforms[c].s
+            #d.s = self.waveforms[c].s
             self.waveforms[c] = d
 
     def check_params(self, params):
@@ -232,8 +233,8 @@ class TriangleBank(object):
 
         # Apply sigmas maximal match.
         if self.sigma_threshold:
-            sr = self.sigma[match_range]/newhp.s
-            isr = newhp.s/self.sigma[match_range]
+            sr = self.sigma[match_range]/newhp.params['template_s']
+            isr = newhp.params['template_s']/self.sigma[match_range]
             range = numpy.where(numpy.maximum(sr, isr) < self.sigma_threshold)[0]
             match_range = match_range[range]
         nsig = len(match_range)
@@ -283,13 +284,31 @@ class TriangleBank(object):
             skip_threshold = 1 - (1 - self.minimal_match) * 2.0
             neighbor.indices = neighbor.indices[maxmatch_matrix[neighbor.indices] > skip_threshold]
     
-    def add_existing_bank(self, params, tau0_start, tau0_end):
-        for p in params:
-            hp = pycbc.types.FrequencySeries(numpy.zeros(gen.flen, dtype=numpy.complex64))
-            hp.params = p
-            hp.tau0 = tau0_from_mass1_mass2(p['mass1'], p['mass2'], 15)
-            hp.tbin = int(hp.tau0 / self.tau0_threshold)
-            self.insert(hp)
+    def add_existing_bank(self, params):    
+        total_num = len(tuple(params.values())[0])
+        waveform_cache = []
+        with multiprocessing.Pool(self.nprocesses) as pool:
+            for return_wf in pool.imap_unordered(
+                wf_wrapper,
+                ({k: params[k][idx] for k in params} for idx in range(total_num))
+            ):
+                waveform_cache += [return_wf]
+
+        for i, hp in enumerate(waveform_cache):
+            if hp is not None:
+                hp.tau0 = pycbc.conversions.tau0_from_mass1_mass2(
+                                            hp.params['mass1'],
+                                            hp.params['mass2'],
+                                            self.tau0_cutoff_frequency)
+                hp.tbin = int(hp.tau0 / self.tau0_threshold)
+                hp.maxmatch_matrix_r = numpy.array([])
+                hp.indices = numpy.array([],dtype=int)
+                self.insert(hp)
+            else:
+                logging.info("#%i Waveform generation failed!", i)
+                continue
+        del waveform_cache
+        return self
 
     def insert(self, hp):
         self.waveforms.append(hp)
@@ -300,7 +319,7 @@ class TriangleBank(object):
                 self.tbins[b] = [len(self)-1]
         self.tau0 = numpy.append(self.tau0, hp.tau0)
         if self.sigma_threshold:
-            self.sigma = numpy.append(self.sigma, hp.s)
+            self.sigma = numpy.append(self.sigma, hp.params['template_s'])
         if self.template_duration_threshold:
             self.template_duration = numpy.append(self.template_duration, hp.params['template_duration'])
 
@@ -454,6 +473,7 @@ def main():
     # checkpointing
     parser.add_argument('--checkpoint-time', type=float, default=5000, help='checkpoint the bank')
     parser.add_argument('--adjust-mass', action='store_true', help='adjust mass range')
+    parser.add_argument('--crawl-one-tau', action='store_true', help='crawl one tau0 at a time')
     
     pycbc.psd.insert_psd_option_group(parser)
     args = parser.parse_args()
@@ -504,14 +524,14 @@ def main():
             logging.info("Adding the existing bank in tau0 range %3.2f-%3.2f", taubanks, taubanke)
             ilength = len(bank)
             f = h5py.File(args.input_file, 'r')
+            
             t = tau0_from_mass1_mass2(f['mass1'][:], f['mass2'][:], args.tau0_cutoff_frequency)
             l = (t <= taubanke) & (t >= taubanks)
             params = {k: f[k][l] for k in f.keys() if k!= 'f_lower' and k!='s' and k!='template_duration'}
             params['approximant'] = numpy.array([v.decode() for v in params['approximant']])
-
             if len(tuple(params.values())[0]) > 0:
                 logging.info('Adding %s waveforms from the existing bank', len(tuple(params.values())[0]))
-                bank, _ = bank.check_params(params)
+                bank = bank.add_existing_bank(params)
             f.close()
             logging.info("Existing bank added, banksize: %s, adding: %s", len(bank), len(bank)-ilength)
 
@@ -570,8 +590,12 @@ def main():
         bank.culltau0(tau0s - args.tau0_threshold * 2.0)
         logging.info("Region Done %3.1f-%3.1f, %s stored", tau0s, tau0e, bank.activelen())
 
-        tau0s += args.tau0_crawl / 2
-        tau0e += args.tau0_crawl / 2
+        if args.crawl_one_tau:
+            tau0s += args.tau0_crawl
+            tau0e += args.tau0_crawl
+        else:
+            tau0s += args.tau0_crawl / 2 
+            tau0e += args.tau0_crawl / 2
 
     finalize(args, bank)
 
