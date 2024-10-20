@@ -290,7 +290,7 @@ class TriangleBank(object):
         with multiprocessing.Pool(self.nprocesses) as pool:
             for return_wf in pool.imap_unordered(
                 wf_wrapper,
-                ({k: params[k][idx] for k in params} for idx in range(total_num))
+                ({k: params[k][idx] for k in params} for idx in tqdm(range(total_num)))
             ):
                 waveform_cache += [return_wf]
 
@@ -422,7 +422,7 @@ def adjustmass(args, tau0s, tau0e):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     pycbc.add_common_pycbc_options(parser)
-    parser.add_argument('--input-file',
+    parser.add_argument('--input-file', nargs='*',
         help='Bank to use as a starting point.')
     parser.add_argument('--output-file', required=True,
         help='Output file name for template bank.')
@@ -523,17 +523,21 @@ def main():
                 taubanke = tau0e + args.tau0_threshold
             logging.info("Adding the existing bank in tau0 range %3.2f-%3.2f", taubanks, taubanke)
             ilength = len(bank)
-            f = h5py.File(args.input_file, 'r')
-            
-            t = tau0_from_mass1_mass2(f['mass1'][:], f['mass2'][:], args.tau0_cutoff_frequency)
-            l = (t <= taubanke) & (t >= taubanks)
-            params = {k: f[k][l] for k in f.keys() if k!= 'f_lower' and k!='s' and k!='template_duration'}
-            params['approximant'] = numpy.array([v.decode() for v in params['approximant']])
-            if len(tuple(params.values())[0]) > 0:
-                logging.info('Adding %s waveforms from the existing bank', len(tuple(params.values())[0]))
-                bank = bank.add_existing_bank(params)
-            f.close()
-            logging.info("Existing bank added, banksize: %s, adding: %s", len(bank), len(bank)-ilength)
+            for bankf in args.input_file:
+                f = h5py.File(bankf, 'r')
+                if len(f.keys()) == 0:
+                    logging.info("Empty file %s", bankf)
+                    f.close()
+                    continue
+                t = tau0_from_mass1_mass2(f['mass1'][:], f['mass2'][:], args.tau0_cutoff_frequency)
+                l = (t <= taubanke) & (t >= taubanks)
+                params = {k: f[k][l] for k in f.keys() if k!= 'f_lower' and k!='template_s' and k!='template_duration' and k!='tempalte_s'}
+                params['approximant'] = numpy.array([v.decode() for v in params['approximant']])
+                if len(tuple(params.values())[0]) > 0:
+                    logging.info('Adding %s waveforms from the existing bank', len(tuple(params.values())[0]))
+                    bank = bank.add_existing_bank(params)
+                f.close()
+                logging.info("Existing bank added, banksize: %s, adding: %s", len(bank), len(bank)-ilength)
 
         if args.adjust_mass:
             args.min, args.max = adjustmass(args, tau0s, tau0e)
@@ -614,12 +618,14 @@ def finalize(args, bank, checkpoint=False):
             logging.info("No waveforms generated. Exiting.")
             sys.exit()
     else:
+        t = tau0_from_mass1_mass2(bank.key('mass1'), bank.key('mass2'), args.tau0_cutoff_frequency)
+        l = (t <= args.tau0_end) & (t >= args.tau0_start)
         for k in bank.keys():
-            val = bank.key(k)
+            val = bank.key(k)[l]
             if val.dtype.char == 'U':
                 val = val.astype('bytes')
             o[k] = val
-        o['f_lower'] = numpy.array([args.low_frequency_cutoff] * len(bank))
+        o['f_lower'] = numpy.array([args.low_frequency_cutoff] * len(bank.key('mass1')[l]))
 
 if __name__ == '__main__':
     main()

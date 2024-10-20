@@ -6,6 +6,7 @@ from pyseobnr.generate_waveform import GenerateWaveform
 
 from tqdm import tqdm
 import multiprocessing
+import pandas as pd
 
 def wf_wrapper(p):
     p2 = {"approximant": "SEOBNRv5EHM",
@@ -29,36 +30,47 @@ def main():
     parser.add_argument('--bank', type=str, required=True,
                         help="Template bank")
     parser.add_argument('--output', type=str, required=True,
-                        help="Path to output bank with waveforms.")
+                        help="Path to output bank with durations.")
     parser.add_argument('--nprocesses', type=int, default=1,
                         help="Number of processes to use for waveform generation parallelization.")
     args = parser.parse_args()
 
     p = {}
-    with h5py.File(args.bank,'r') as f:
-        for k in f.keys():
-            p[k] = f[k][:]
-    p['index'] = np.arange(len(p['approximant']))
-
-    # generate waveforms
     duration_cache = {}
-    with multiprocessing.Pool(args.nprocesses) as pool:
-        for return_i, return_epoch in pool.imap_unordered(
-            wf_wrapper,
-            ({k: p[k][idx] for k in p.keys()} for idx in tqdm(range(len(p['approximant']))))
+
+    if args.bank.endswith('.csv'):
+        # Read the CSV file
+        df = pd.read_csv(args.bank)
+        df['index'] = df.index
+        # generate waveforms
+        param_list = ['index', 'mass1', 'mass2', 'spin1z', 'spin2z', 'eccentricity', 'rel_anomaly']
+        with multiprocessing.Pool(args.nprocesses) as pool:
+            for return_i, return_epoch in pool.imap_unordered(
+                wf_wrapper,
+                ({k: df.loc[idx, k] for k in param_list} for idx in tqdm(df.index))
             ):
-            duration_cache[return_i] = return_epoch
+                if return_epoch is not None:
+                    duration_cache[return_i] = return_epoch
+        df['template_duration'] = df['index'].map(duration_cache)
+        df.drop('index', axis=1, inplace=True)
+        df.to_csv(args.output, index=False)
 
-    sorti = np.argsort(list(duration_cache.keys()))
-    duration = np.array(list(duration_cache.values()))[sorti]
+    elif args.bank.endswith('.hdf5'):
+        with h5py.File(args.bank, 'r') as f:
+            for k in f.keys():
+                p[k] = f[k][:]
+        p['index'] = np.arange(len(p['approximant']))
 
-    with h5py.File(args.output,'w') as f_write:
-        with h5py.File(args.bank,'r') as f_bank:
-            for k in f_bank.keys():
-                if k != 'template_duration':
-                    f_write[k] = f_bank[k][()]
-        # https://github.com/h5py/h5py/issues/1329
-        f_write['template_duration'] = duration
+        sorti = np.argsort(list(duration_cache.keys()))
+        duration = np.array(list(duration_cache.values()))[sorti]
+
+        with h5py.File(args.output,'w') as f_write:
+            with h5py.File(args.bank,'r') as f_bank:
+                for k in f_bank.keys():
+                    if k != 'template_duration':
+                        f_write[k] = f_bank[k][()]
+            # https://github.com/h5py/h5py/issues/1329
+            f_write['template_duration'] = duration
 
 if __name__ == "__main__":
     main()

@@ -120,7 +120,7 @@ def main():
         sorti = np.argsort(list(waveform_cache.keys()))
         s = np.array([h.s for h in waveform_cache.values()])[sorti]
         with h5py.File(args.bank,'a') as f_bank:
-            f_bank['s'] = s
+            f_bank['template_s'] = s
     
     # dump the waveforms
     for ii in tqdm(waveform_cache.keys()):
