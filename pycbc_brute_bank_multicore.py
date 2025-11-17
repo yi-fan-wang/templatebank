@@ -1,6 +1,7 @@
 """Generate a bank of templates using a brute force stochastic method.
 """
-import numpy, h5py
+import numpy as np
+import h5py
 import logging, argparse, time, sys
 from scipy.stats import gaussian_kde
 
@@ -32,11 +33,11 @@ class GenUniformWaveform(object):
         delta_f (float): The frequency resolution.
         flen (int): The length of the frequency array.
         kmin (int): The minimum index of the frequency array.
-        w (numpy.ndarray): The square root of the inverse of the power spectral density.
-        qtilde_view (numpy.ndarray): The view of the qtilde array.
+        w (np.ndarray): The square root of the inverse of the power spectral density.
+        qtilde_view (np.ndarray): The view of the qtilde array.
         ifft (pycbc.fft.IFFT): The inverse Fourier transform object.
-        md (numpy.ndarray): The last 100 elements of the q array.
-        md2 (numpy.ndarray): The first 100 elements of the q array.
+        md (np.ndarray): The last 100 elements of the q array.
+        md2 (np.ndarray): The first 100 elements of the q array.
 
     Methods:
         generate(**kwds): Generates a waveform.
@@ -59,11 +60,11 @@ class GenUniformWaveform(object):
                                       is_asd_file = False)
         
         self.kmin = int(f_lower * buffer_length)
-        self.w = ((1.0 / psd[self.kmin:-1]) ** 0.5).astype(numpy.float32)
+        self.w = ((1.0 / psd[self.kmin:-1]) ** 0.5).astype(np.float32)
         
         # inverse FFT
-        qtilde = pycbc.types.zeros(tlen, numpy.complex64)
-        q = pycbc.types.zeros(tlen, numpy.complex64)
+        qtilde = pycbc.types.zeros(tlen, np.complex64)
+        q = pycbc.types.zeros(tlen, np.complex64)
         self.qtilde_view = qtilde[self.kmin:self.flen - 1]
         self.ifft = pycbc.fft.IFFT(qtilde, q)
         
@@ -92,7 +93,7 @@ class GenUniformWaveform(object):
             return None
         
         hp.resize(self.flen)
-        hp = hp.astype(numpy.complex64)
+        hp = hp.astype(np.complex64)
         hp[self.kmin:-1] *= self.w
         s = float(1.0 / pycbc.filter.sigmasq(hp,low_frequency_cutoff=self.f_lower) ** 0.5)
         hp *= s
@@ -136,18 +137,18 @@ class TriangleBank(object):
     def __init__(self, args):
         self.waveforms = []
         self.tbins = {} # tau0 bins
-        self.tau0 = numpy.array([])
+        self.tau0 = np.array([])
 
         self.tau0_threshold = args.tau0_threshold
         self.tau0_cutoff_frequency = args.tau0_cutoff_frequency
         
         self.sigma_threshold = args.sigma_threshold
         if self.sigma_threshold:
-            self.sigma = numpy.array([])
+            self.sigma = np.array([])
             
         self.template_duration_threshold = args.template_duration_threshold
         if self.template_duration_threshold:
-            self.template_duration = numpy.array([])
+            self.template_duration = np.array([])
 
         self.nprocesses = args.nprocesses
         self.minimal_match = args.minimal_match
@@ -169,13 +170,13 @@ class TriangleBank(object):
         return list(self.waveforms[0].params)
 
     def key(self, k):
-        return numpy.array([p.params[k] for p in self.waveforms])
+        return np.array([p.params[k] for p in self.waveforms])
 
     def range(self):
         if not hasattr(self, 'r'):
             self.r = None
         if self.r is None or len(self.r) != len(self):
-            self.r = numpy.arange(0, len(self))
+            self.r = np.arange(0, len(self))
         return self.r
 
     def culltau0(self, threshold):
@@ -183,8 +184,8 @@ class TriangleBank(object):
         class dumb(object):
             pass
         
-        t0 = numpy.array([h.tau0 for h in self])
-        cull = numpy.where(t0 < threshold)[0]
+        t0 = np.array([h.tau0 for h in self])
+        cull = np.where(t0 < threshold)[0]
         for c in cull:
             d = dumb()
             d.tau0 = self.waveforms[c].tau0
@@ -224,32 +225,32 @@ class TriangleBank(object):
                                             self.tau0_cutoff_frequency)
         newhp.tbin = int(newhp.tau0 / self.tau0_threshold)
         if newhp.tbin in self.tbins:
-            match_range = numpy.array(self.tbins[newhp.tbin],dtype=int)
-            range = numpy.where(abs(self.tau0[match_range] - newhp.tau0) < self.tau0_threshold)[0]
+            match_range = np.array(self.tbins[newhp.tbin],dtype=int)
+            range = np.where(abs(self.tau0[match_range] - newhp.tau0) < self.tau0_threshold)[0]
             match_range = match_range[range]
         else:
-            match_range = numpy.array([],dtype=int)
+            match_range = np.array([],dtype=int)
         ntau0 = len(match_range)
 
         # Apply sigmas maximal match.
         if self.sigma_threshold:
             sr = self.sigma[match_range]/newhp.params['template_s']
             isr = newhp.params['template_s']/self.sigma[match_range]
-            range = numpy.where(numpy.maximum(sr, isr) < self.sigma_threshold)[0]
+            range = np.where(np.maximum(sr, isr) < self.sigma_threshold)[0]
             match_range = match_range[range]
         nsig = len(match_range)
 
         # Apply template duration bound
         if self.template_duration_threshold:
             t = newhp.params['template_duration']
-            range = numpy.where(abs(self.template_duration[match_range] - t) < self.template_duration_threshold)[0]
+            range = np.where(abs(self.template_duration[match_range] - t) < self.template_duration_threshold)[0]
             match_range = match_range[range]
         ndur = len(match_range)
 
         neighbor = Shrinker(match_range)
-        maxmatch_matrix = numpy.ones(len(self))
-        match_matrix = numpy.array([])
-        match_matrix_indices = numpy.array([],dtype=int)
+        maxmatch_matrix = np.ones(len(self))
+        match_matrix = np.array([])
+        match_matrix_indices = np.array([],dtype=int)
         # Try to do some actual matches
         mmax = 0
         while 1:
@@ -270,13 +271,13 @@ class TriangleBank(object):
             if m > mmax:
                 mmax = m
             
-            match_matrix_indices = numpy.append(match_matrix_indices, j)
-            match_matrix = numpy.append(match_matrix, m)
+            match_matrix_indices = np.append(match_matrix_indices, j)
+            match_matrix = np.append(match_matrix, m)
             maxmatch_matrix[j] = m
 
             # Update bounding match values, apply triangle inequality, consider newhp, oldhp and others
             newhp_other_maxmatch = oldhp.maxmatch_matrix_r - m + 1.10
-            update = numpy.where(newhp_other_maxmatch < maxmatch_matrix[oldhp.indices])[0]
+            update = np.where(newhp_other_maxmatch < maxmatch_matrix[oldhp.indices])[0]
             maxmatch_matrix[oldhp.indices[update]] = newhp_other_maxmatch[update]
             # oldhp.indices: absolute index of the waveform in the bank
 
@@ -301,8 +302,8 @@ class TriangleBank(object):
                                             hp.params['mass2'],
                                             self.tau0_cutoff_frequency)
                 hp.tbin = int(hp.tau0 / self.tau0_threshold)
-                hp.maxmatch_matrix_r = numpy.array([])
-                hp.indices = numpy.array([],dtype=int)
+                hp.maxmatch_matrix_r = np.array([])
+                hp.indices = np.array([],dtype=int)
                 self.insert(hp)
             else:
                 logging.info("#%i Waveform generation failed!", i)
@@ -317,17 +318,17 @@ class TriangleBank(object):
                 self.tbins[b].append(len(self)-1)
             else:
                 self.tbins[b] = [len(self)-1]
-        self.tau0 = numpy.append(self.tau0, hp.tau0)
+        self.tau0 = np.append(self.tau0, hp.tau0)
         if self.sigma_threshold:
-            self.sigma = numpy.append(self.sigma, hp.params['template_s'])
+            self.sigma = np.append(self.sigma, hp.params['template_s'])
         if self.template_duration_threshold:
-            self.template_duration = numpy.append(self.template_duration, hp.params['template_duration'])
+            self.template_duration = np.append(self.template_duration, hp.params['template_duration'])
 
 def draw(rtype, args, bank):
     '''Generate random parameters in each stochastic proposal
     '''
     if rtype == 'uniform':
-        params = {name: numpy.random.uniform(pmin, pmax, size=args.size)
+        params = {name: np.random.uniform(pmin, pmax, size=args.size)
                       for name, pmin, pmax in zip(args.params, args.min, args.max)}
 
     elif rtype == 'kde':
@@ -337,13 +338,13 @@ def draw(rtype, args, bank):
         p = bank.keys()
         p.remove('approximant')
         #p.remove('f_lower')
-        bdata = numpy.array([bank.key(k)[-trail:] for k in p])
+        bdata = np.array([bank.key(k)[-trail:] for k in p])
         kde = gaussian_kde(bdata)
         points = kde.resample(size=args.size)
         params = {k: v for k, v in zip(p, points)}
 
-    params['approximant'] = numpy.array([args.approximant] * args.size)
-    #params['f_lower'] = numpy.array([args.low_frequency_cutoff] * args.size)
+    params['approximant'] = np.array([args.approximant] * args.size)
+    #params['f_lower'] = np.array([args.low_frequency_cutoff] * args.size)
 
     # Filter out stuff (kde method may also generate samples outside boundaries).
     l = None
@@ -351,20 +352,36 @@ def draw(rtype, args, bank):
         nl = (params[name] < pmax) & (params[name] > pmin)
         l = (nl & l) if l is not None else nl
     if args.max_q:
-        q =  numpy.maximum(params['mass1'] / params['mass2'], params['mass2'] / params['mass1'])
+        q =  np.maximum(params['mass1'] / params['mass2'], params['mass2'] / params['mass1'])
         l &= q < args.max_q
-    if args.max_mtotal:
-        l &= params['mass1'] + params['mass2'] < args.max_mtotal
-    if args.max_mchirp:
-        from pycbc.conversions import mchirp_from_mass1_mass2
-        mc = mchirp_from_mass1_mass2(params['mass1'], params['mass2'])
-        l &= mc < args.max_mchirp
-    if args.min_mchirp:
-        from pycbc.conversions import mchirp_from_mass1_mass2
-        mc = mchirp_from_mass1_mass2(params['mass1'], params['mass2'])
-        l &= mc > args.min_mchirp
     if args.ecc_constraint:
-        l &= ((params['eccentricity'] < 0.3) & ((params['mass1'] < 15) | (params['mass2']<15))) | ((params['mass1'] >= 15) & (params['mass2'] >= 15))
+        mchirp15 = 13.058258449441862
+        mchirp5 = 4.352752816480621
+        mc = pycbc.conversions.mchirp_from_mass1_mass2(params['mass1'], params['mass2'])
+
+        max_ecc = np.where(
+            mc <= mchirp5, 0.3,
+            np.where(
+                mc >= mchirp15, 0.5,
+                0.3 + (0.5 - 0.3) * (mc - mchirp5) / (mchirp15 - mchirp5)  # 线性插值
+            )
+        )
+        l &= params['eccentricity'] < max_ecc
+
+    if args.spin_constraint:
+        mchirp15 = 13.058258449441862
+        mchirp30 = 26.116516898883724
+        mc = pycbc.conversions.mchirp_from_mass1_mass2(params['mass1'], params['mass2'])
+
+        max_spin = np.where(
+        mc <= mchirp15, 0.5,
+        np.where(
+            mc >= mchirp30, 0.8,
+            0.5 + (0.8 - 0.5) * (mc - mchirp15) / (mchirp30 - mchirp15)
+            )
+        )
+        l &= params['spin1z'] < max_spin
+        l &= params['spin2z'] < max_spin
 
     params = {k: params[k][l] for k in params}
     return params
@@ -379,7 +396,7 @@ def cdraw(rtype, ts, te, args, bank):
     i = 0
     while len(p[list(p.keys())[0]]) < args.size:
         tp = draw(rtype, args, bank)
-        p = {k: numpy.concatenate([p[k], tp[k]]) for k in p}
+        p = {k: np.concatenate([p[k], tp[k]]) for k in p}
 
         if  len(p[list(p.keys())[0]]) > 0:
             t = tau0_from_mass1_mass2(p['mass1'], p['mass2'],
@@ -422,11 +439,14 @@ def adjustmass(args, tau0s, tau0e):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     pycbc.add_common_pycbc_options(parser)
+    pycbc.psd.insert_psd_option_group(parser)
+
     parser.add_argument('--input-file', nargs='*',
         help='Bank to use as a starting point.')
     parser.add_argument('--output-file', required=True,
         help='Output file name for template bank.')
 
+    # parameter ranges
     parser.add_argument('--params',
         help='list of paramaters to use', nargs='+')
     parser.add_argument('--min',
@@ -435,87 +455,85 @@ def main():
         help='list of the maximum parameter values', nargs='+', type=float)
     parser.add_argument('--approximant',  required=True, type=str,
         help='The waveform approximant to place')
-    # parameter ranges
     parser.add_argument('--fixed-params', type=str, nargs='*')
     parser.add_argument('--fixed-values', type=float, nargs='*')
-    parser.add_argument('--max-mtotal', type=float)
-    parser.add_argument('--min-mchirp', type=float, help='minimum chirp mass')
-    parser.add_argument('--max-mchirp', type=float, help='maximum chirp mass')
     parser.add_argument('--max-q', type=float, help='maximum mass ratio')
     parser.add_argument('--ecc-constraint', action='store_true', help='ecc constraint')
-    # proposal generation
-    parser.add_argument('--minimal-match', default=0.97, type=float, 
-        help='minimal match of SNR due to discreteness of the template bank')
+    parser.add_argument('--spin-constraint', action='store_true', help='spin constraint')
+
+    # waveform parameters
     parser.add_argument('--buffer-length', default=4, type=float,
-        help='size of waveform buffer in seconds')
+        help='size of waveform buffer in seconds, should be longer than a waveform duration for TD approximates')
     parser.add_argument('--max-signal-length', type= float, 
         help="When specified, it cuts the maximum length of the waveform model to the lengh provided")
     parser.add_argument('--sample-rate', default=2048, type=float,
         help='sample rate in seconds')
     parser.add_argument('--low-frequency-cutoff', default=20.0, type=float)
-    parser.add_argument('--sigma-threshold', type=float)
-    parser.add_argument('--template-duration-threshold', type=float)
-    parser.add_argument('--tau0-threshold', type=float, required=True, help='threshold to separate two waveforms')
+    parser.add_argument('--nprocesses', type=int, default=1,
+        help='Number of processes to use for waveform generation parallelization. If not given then only a single core will be used.')
+    
+    # generation proposal
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--minimal-match', default=0.97, type=float, 
+        help='minimal match of SNR due to discreteness of the template bank')
     parser.add_argument('--placement-iterations', default=1000, type=int, 
         help='Specify the number of attempts the bank should make when placing points. Use this option if the bank fails to place any points.')
     parser.add_argument('--tolerance', type=float, required=True, help='tolerance for acceptance')
     parser.add_argument('--size', type=int, required=True,
         help='Size of waveforms in each stochastic proposal.')
-    # tau0 crawling parameters
+    
+    # splitting parameters
+    parser.add_argument('--sigma-threshold', type=float)
+    parser.add_argument('--template-duration-threshold', type=float)
+    parser.add_argument('--tau0-threshold', type=float, required=True, help='threshold to separate two waveforms')    
     parser.add_argument('--tau0-crawl', type=float, help='step length tau0 would proceed')
     parser.add_argument('--tau0-start', type=float, help='starting value for tau0')
     parser.add_argument('--tau0-end', type=float, help='ending value for tau0')
     parser.add_argument('--tau0-cutoff-frequency', type=float, default=15.0)
-    # multiprocessing
-    parser.add_argument('--nprocesses', type=int, default=1,
-        help='Number of processes to use for waveform generation parallelization. If not given then only a single core will be used.')
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--adjust-mass', action='store_true', help='adjust mass range')
+    parser.add_argument('--crawl-one-tau', action='store_true', help='crawl one tau0 at a time') 
+    
     # checkpointing
     parser.add_argument('--checkpoint-time', type=float, default=5000, help='checkpoint the bank')
-    parser.add_argument('--adjust-mass', action='store_true', help='adjust mass range')
-    parser.add_argument('--crawl-one-tau', action='store_true', help='crawl one tau0 at a time')
-    
-    pycbc.psd.insert_psd_option_group(parser)
     args = parser.parse_args()
+    np.random.seed(args.seed)    
 
-    for model in ["pyseobnr.models.SEOBNRv5EHM",
-                  "pyseobnr.eob.dynamics.integrate_ode_ecc",
-                  "pyseobnr.eob.dynamics.initial_conditions_aligned_ecc_opt"]:
-        logger = logging.getLogger(model)
-        logger.disabled = True
+    #for model in ["pyseobnr.models.SEOBNRv5EHM",
+    #              "pyseobnr.eob.dynamics.integrate_ode_ecc",
+    #              "pyseobnr.eob.dynamics.initial_conditions_aligned_ecc_opt"]:
+    #    logger = logging.getLogger(model)
+    #    logger.disabled = True
     
     logger = logging.getLogger()
     logger.setLevel(level=logging.INFO)
     logger.handlers.clear() # Clear existing handlers
-    #logger.propagate = False
     logging.basicConfig(level=logging.INFO, 
                         format='%(asctime)s: %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S')
     
-    numpy.random.seed(args.seed)    
-
     global gen
-    gen = GenUniformWaveform(args.buffer_length, args.sample_rate, args.low_frequency_cutoff)
+    gen = GenUniformWaveform(args.buffer_length, args.sample_rate, args.low_frequency_cutoff, args.psd_file)
     bank = TriangleBank(args)
-    
-    mass = {}
+
     # check if the tau0 range is proper
+    mlim = {}
     for name, pmin, pmax in zip(args.params, args.min, args.max):
         if name == 'mass1':
-            mass['mass1'] = [pmin, pmax]
+            mlim['mass1'] = [pmin, pmax]
         elif name == 'mass2':
-            mass['mass2'] = [pmin, pmax]
-    taumax = tau0_from_mass1_mass2(mass['mass1'][0], mass['mass2'][0], args.tau0_cutoff_frequency)
-    taumin = tau0_from_mass1_mass2(mass['mass1'][1], mass['mass2'][1], args.tau0_cutoff_frequency)
+            mlim['mass2'] = [pmin, pmax]
+    taumax = tau0_from_mass1_mass2(mlim['mass1'][0], mlim['mass2'][0], args.tau0_cutoff_frequency)
+    taumin = tau0_from_mass1_mass2(mlim['mass1'][1], mlim['mass2'][1], args.tau0_cutoff_frequency)
 
     tau0s = args.tau0_start
     tau0e = tau0s + args.tau0_crawl
-    logging.info("Starting to generate stochastic proposals, initial tau0s: %3.2f, initialtau0e: %3.2f, tau0end: %3.2f", tau0s, tau0e, args.tau0_end)
+    logging.info(f"Starting to generate stochastic proposals, initial tau0s: {tau0s}, initialtau0e: {tau0e}, tau0end: {args.tau0_end}")
     while tau0e <= args.tau0_end + 0.00000001:
-        logging.info("tau0s, tau0e: %3.2f-%3.2f", tau0s, tau0e)
+        logging.info(f"tau0s, tau0e: {tau0s}-{tau0e}")
         
         if args.input_file:
             if tau0s == args.tau0_start:
+                # initialization
                 taubanks = tau0s - args.tau0_threshold
                 taubanke = tau0e + args.tau0_threshold
             else:
@@ -529,10 +547,10 @@ def main():
                     logging.info("Empty file %s", bankf)
                     f.close()
                     continue
-                t = tau0_from_mass1_mass2(f['mass1'][:], f['mass2'][:], args.tau0_cutoff_frequency)
+                t = tau0_from_mass1_mass2(f['mass1'][()], f['mass2'][()], args.tau0_cutoff_frequency)
                 l = (t <= taubanke) & (t >= taubanks)
                 params = {k: f[k][l] for k in f.keys() if k!= 'f_lower' and k!='template_s' and k!='template_duration' and k!='tempalte_s'}
-                params['approximant'] = numpy.array([v.decode() for v in params['approximant']])
+                params['approximant'] = np.array([v.decode() for v in params['approximant']])
                 if len(tuple(params.values())[0]) > 0:
                     logging.info('Adding %s waveforms from the existing bank', len(tuple(params.values())[0]))
                     bank = bank.add_existing_bank(params)
@@ -556,9 +574,8 @@ def main():
             
             blen = len(bank)
             bank, uaccept = bank.check_params(params)
-            logging.info("tau0 %3.1f-%3.1f: uniform(round %s) finished! "
-                         "banksize:%s accept:%s added:%s\n",
-                         tau0s, tau0e, loop, len(bank), uaccept, len(bank) - blen)
+            logging.info(f"tau0 {tau0s:3.1f}-{tau0e:3.1f}: uniform(round {loop}) finished! "
+                         f"banksize: {len(bank)} accept: {uaccept} added: {len(bank) - blen}\n")
 
             # only start to determine the acceptance when going over 10 rounds
             if loop > 10:
@@ -577,10 +594,8 @@ def main():
                 bank, kaccept = bank.check_params(params)
                 if kloop == 1:
                     initial_kaccept = kaccept
-                logging.info("tau0 %3.1f-%3.1f: KDE(round %s in total %s) finished! "
-                             "banksize: %s accept: %s k0accept: %s, added: %s\n",
-                             tau0s, tau0e, kloop, loop, 
-                             len(bank), kaccept, initial_kaccept, len(bank) - blen)
+                logging.info(f"tau0 {tau0s:3.1f}-{tau0e:3.1f}: KDE(round {kloop} in total {loop}) finished! "
+                             f"banksize: {len(bank)} accept: {kaccept} k0accept: {initial_kaccept}, added: {len(bank) - blen}\n")
 
                 if kaccept <= args.tolerance:
                     accept = kaccept
@@ -592,7 +607,7 @@ def main():
                     current_time = time.time()
 
         bank.culltau0(tau0s - args.tau0_threshold * 2.0)
-        logging.info("Region Done %3.1f-%3.1f, %s stored", tau0s, tau0e, bank.activelen())
+        logging.info(f"Region Done {tau0s:.1f}-{tau0e:.1f}, {bank.activelen()} stored")
 
         if args.crawl_one_tau:
             tau0s += args.tau0_crawl
@@ -625,7 +640,7 @@ def finalize(args, bank, checkpoint=False):
             if val.dtype.char == 'U':
                 val = val.astype('bytes')
             o[k] = val
-        o['f_lower'] = numpy.array([args.low_frequency_cutoff] * len(bank.key('mass1')[l]))
+        o['f_lower'] = np.array([args.low_frequency_cutoff] * len(bank.key('mass1')[l]))
 
 if __name__ == '__main__':
     main()
