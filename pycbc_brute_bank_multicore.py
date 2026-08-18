@@ -45,7 +45,7 @@ class GenUniformWaveform(object):
 
     """
 
-    def __init__(self, buffer_length, sample_rate, f_lower, 
+    def __init__(self, buffer_length, sample_rate, f_lower,
                     psd_path = '/work/yifanwang/ecc/templatebank/o3psd.txt'):
         self.f_lower = f_lower
         self.delta_f = 1.0 / buffer_length
@@ -82,12 +82,12 @@ class GenUniformWaveform(object):
             pycbc.waveform.Waveform: The generated waveform.
 
         """
-        try:    
+        try:
             hp, _ = pycbc.waveform.get_fd_waveform(delta_f=self.delta_f,
                                                    f_lower=self.f_lower,
                                                    **kwds)
-            if hasattr(hp, 'eob_template_duration'):
-                duration = hp.eob_template_duration
+            #if hasattr(hp, 'eob_template_duration'):
+            #    duration = hp.eob_template_duration
         except Exception as e:
             logging.info("Waveform generation failed: %s", e)
             return None
@@ -101,8 +101,8 @@ class GenUniformWaveform(object):
         hp.view = hp[self.kmin:-1]
         #hp.s = (1.0 / s) ** 2.0
         hp.params['template_s'] = (1.0 / s) ** 2.0
-        if duration:
-            hp.params['template_duration'] = duration
+        #if duration:
+        #    hp.params['template_duration'] = duration
         return hp
 
     def match(self, hp, hc):

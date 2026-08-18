@@ -1,0 +1,9 @@
+__pycache__/
+*.hdf
+*.log
+*.out
+*.err
+script/odd_num/
+script/log/
+script/backup_failure/
+script/backup_allfiles/

@@ -1,0 +1,20 @@
+{
+ "bank_file": "/work/yifanwang/o4a_ecc/gen_bank_script/combine-o4a-ecc.hdf",
+ "n_original": 2877175,
+ "n_removed": 258,
+ "n_kept": 2876917,
+ "scan_files": [
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_0_287718.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_1150870_1438588.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_1438588_1726305.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_1726305_2014022.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_2014022_2301740.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_2301740_2589458.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_2589458_2877175.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_287718_575435.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_575435_863152.npz",
+  "/work/yifanwang/o4a_ecc/bank_v6_scan/out/v6scan_863152_1150870.npz"
+ ],
+ "output": "/work/yifanwang/o4a_ecc/gen_bank_script/combine-o4a-ecc-v6clean.hdf",
+ "removed_output": "/work/yifanwang/o4a_ecc/gen_bank_script/combine-o4a-ecc-v6removed.hdf"
+}

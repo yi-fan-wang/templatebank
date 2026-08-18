@@ -1,0 +1,16 @@
+universe = vanilla
+accounting_group = o4aecc
+getenv = True
+
+executable = /usr/bin/bash
+arguments = even_gen_bank.sh $$([$(Process)*2]) 128
+
+log = log/log_$(Cluster)_$$([$(Process)*2]).log
+error = log/error_$(Cluster)_$$([$(Process)*2]).err
+output = log/output_$(Cluster)_$$([$(Process)*2]).out
+
+request_cpus = 64
+request_memory = 500GB
+request_disk = 350GB
+
+queue 44

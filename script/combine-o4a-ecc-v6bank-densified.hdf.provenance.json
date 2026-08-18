@@ -1,0 +1,92 @@
+{
+ "slices": [
+  {
+   "idx": 0,
+   "n": 926
+  },
+  {
+   "idx": 1,
+   "n": 1459
+  },
+  {
+   "idx": 2,
+   "n": 4672
+  },
+  {
+   "idx": 3,
+   "n": 3912
+  },
+  {
+   "idx": 4,
+   "n": 11277
+  },
+  {
+   "idx": 5,
+   "n": 6893
+  },
+  {
+   "idx": 6,
+   "n": 20521
+  },
+  {
+   "idx": 7,
+   "n": 11988
+  },
+  {
+   "idx": 8,
+   "n": 34165
+  },
+  {
+   "idx": 9,
+   "n": 19221
+  },
+  {
+   "idx": 10,
+   "n": 53422
+  },
+  {
+   "idx": 11,
+   "n": 25107
+  },
+  {
+   "idx": 12,
+   "n": 79345
+  },
+  {
+   "idx": 13,
+   "n": 31575
+  },
+  {
+   "idx": 14,
+   "n": 99230
+  },
+  {
+   "idx": 15,
+   "n": 41385
+  },
+  {
+   "idx": 16,
+   "n": 107146
+  },
+  {
+   "idx": 17,
+   "n": 34411
+  },
+  {
+   "idx": 18,
+   "n": 106666
+  },
+  {
+   "idx": 19,
+   "n": 36625
+  }
+ ],
+ "n_total": 2970781,
+ "n_boundary_duplicates_removed": 636089,
+ "n_seed": 2876924,
+ "n_missing_seed": 0,
+ "n_unique_seed": 2876924,
+ "n_duplicate_seed_rows": 0,
+ "n_added": 93857,
+ "output": "/work/yifanwang/o4a_ecc/gen_bank_script/combine-o4a-ecc-v6bank-densified.hdf"
+}
