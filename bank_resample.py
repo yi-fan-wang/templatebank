@@ -12,6 +12,7 @@ def main():
                         help="Path to output the sub bank")
     parser.add_argument('--min-mass', type=float, default=0, help='mass lower bound to resample the bank.')
     parser.add_argument('--select-all', action='store_true', help='Dump all the banks.')
+    parser.add_argument('--replace', action='store_true', help='if true, resample with replacement.')
     args = parser.parse_args()
 
     thisbank = {}
@@ -23,7 +24,7 @@ def main():
         if args.nsamples:
             out_i = np.random.choice(range(len(thisbank['approximant'])),
                                      args.nsamples,
-                                     replace=False)
+                                     replace=args.replace)
             out_i = np.sort(out_i)
         elif args.select_all:
             out_i = np.arange(len(thisbank['approximant']))

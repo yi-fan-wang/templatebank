@@ -1,4 +1,3 @@
-# %%
 import numpy as np
 import pandas as pd
 import h5py
@@ -10,7 +9,6 @@ import multiprocessing
 from argparse import ArgumentParser
 import logging
 
-# %%
 class GenWaveform(object):
     '''Waveform Generator
     '''
@@ -108,7 +106,7 @@ def main():
             'rel_anomaly': f['rel_anomaly'][:],
             'spin1z': f['spin1z'][:],
             'spin2z': f['spin2z'][:],
-            'approximant': f['approximant'][:].astype('str'),
+            'approximant': f['approximant'][()].astype('str'),
             'f_lower': f['f_lower'][:]}
         )
         if args.with_duration:

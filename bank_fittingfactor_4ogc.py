@@ -7,86 +7,21 @@ import pycbc.conversions, pycbc.distributions, pycbc.waveform, pycbc.filter, pyc
 from tqdm import tqdm
 import datetime
 import multiprocessing
+import uuid
 from argparse import ArgumentParser
 import logging
+import searchtool
 
 #np.random.seed(0)
 #toy_num = 20000
-class GenWaveform(object):
-    '''Waveform Generator
-    '''
-    def __init__(self, buffer_length, sample_rate, f_lower):
-        self.f_lower = f_lower
-        self.delta_f = 1.0 / buffer_length
-        self.sample_rate = sample_rate
-        tlen = int(buffer_length * sample_rate) # buffer length x sample_rate
-        self.flen = tlen // 2 + 1
-
-        #psd is hard coded to O3 psd
-        psd = pycbc.psd.read.from_txt('/work/yifanwang/ecc/templatebank/o3psd.txt', 
-            self.flen, self.delta_f, self.f_lower, is_asd_file = False)
-        
-        self.kmin = int(f_lower * buffer_length)
-        self.w = ((1.0 / psd[self.kmin:-1]) ** 0.5).astype(np.float32)
-        
-        qtilde = pycbc.types.zeros(tlen, np.complex64) # correlation in Fourier domain
-        q = pycbc.types.zeros(tlen, np.complex64) # correlation in time domain
-        self.qtilde_view = qtilde[self.kmin:self.flen - 1]
-        self.ifft = pycbc.fft.IFFT(qtilde, q)
-        
-        # the maximum is around 0
-        self.md = q._data[-100:]
-        self.md2 = q._data[0:100] 
-
-    def generate(self, **kwds):
-        '''Return normalized hp
-        '''
-        if kwds['approximant'] in pycbc.waveform.fd_approximants():  
-            hp, _ = pycbc.waveform.get_fd_waveform(delta_f = self.delta_f, **kwds)
-            if hasattr(hp, 'eob_template_duration'):
-                duration = hp.eob_template_duration
-        else:
-            dt = 1.0 / self.sample_rate
-            hp = pycbc.waveform.get_waveform_filter(
-                        pycbc.types.zeros(self.flen, dtype=np.complex64),
-                        delta_f=self.delta_f,
-                        delta_t=dt,
-                        f_lower=self.f_lower,
-                        **kwds)
-        
-        hp.resize(self.flen)
-        hp = hp.astype(np.complex64)
-        
-        hp[self.kmin:-1] *= self.w
-        s = pycbc.filter.sigmasq(hp, low_frequency_cutoff=self.f_lower)
-        hp /= s**0.5
-        
-        hp.params = kwds
-        #hp.s = s
-        hp.params['template_s'] = s
-        if duration:
-            hp.params['template_duration'] = duration
-
-        return hp
-
-    def match(self, hp, hc):
-        hp.view = hp[self.kmin:-1]
-        hc.view = hc[self.kmin:-1]
-        pycbc.filter.correlate(hp.view, hc.view, self.qtilde_view)
-        self.ifft.execute()
-        m = max(abs(self.md).max(), abs(self.md2).max())
-        return m * 4.0 * self.delta_f
-
-    def overlap(self, hp, hc):
-        o = hp.inner(hc)
-        return o * 4.0 * self.delta_f
 
 def wf_wrapper(p):
     index = p['index']
     try:
         hp = gen.generate(**p)
         return index, hp
-    except Exception:
+    except Exception as e:
+        logging.info("Waveform generation failed for #%i: %s", index, e)
         return index, None
 
 def match_wrapper(p):
@@ -124,9 +59,9 @@ def allinjmatch_wrapper(p):
 
 
 def gen_injections():
-    mass_lim = (5, 200)
+    mass_lim = (100, 200)
     spin_lim = (-0.5, 0.5)
-    ecc_lim = (0, 0.5)
+    ecc_lim = (0, 0.05)
     ano_lim = (0, 2*np.pi)
 
     uniform_prior = pycbc.distributions.Uniform(
@@ -172,38 +107,28 @@ def main():
     parser.add_argument('--duration-tolerance', type=float, default=0,
                         help='Duration tolerance for the waveform generation')
     parser.add_argument('--sigma-tolerance', type=float, default=0,
-                        help='Sigma tolerance for the waveform generation')
+                        help='Sigma tolerance for the waveform generation') 
     parser.add_argument('--use-parallel-match', action='store_true',help='Use parallel match calculation')
     parser.add_argument('--output', type=str, default='./fitfac.csv',
                         help="Path to output fitting factors.")
     parser.add_argument('--checkpoint-interval', type=int, default=10,
                         help='Checkpoint interval')
     parser.add_argument('--toy-num', type=int, help='Number of templates in toy models')
-    parser.add_argument('--injection-waveform', type=str, default=None,help='Waveform approximant for the injections')
     args = parser.parse_args()
 
     global gen
-    gen = GenWaveform(buffer_length = 32, sample_rate = 2048, f_lower = 20)
+    gen = searchtool.GenNormWaveform(buffer_length = 32, sample_rate = 2048, f_lower = 20)
 
-    # Step 1: Read the template bank parameters
+    # Read the template bank parameters
     t_start = datetime.datetime.now()
+    logging.info("Reading bank...")
     
     global bank_params
     with h5py.File(args.bank) as f:
-        bank_params = pd.DataFrame(
-           {'mass1': f['mass1'][()],
-            'mass2': f['mass2'][()],
-            'tau0': pycbc.conversions.tau0_from_mass1_mass2(f['mass1'][()],f['mass2'][()],15),
-            'eccentricity': f['eccentricity'][()],
-            'rel_anomaly': f['rel_anomaly'][()],
-            'spin1z': f['spin1z'][()],
-            'spin2z': f['spin2z'][()],
-            'approximant': f['approximant'][()].astype('str'),
-            'f_lower': f['f_lower'][()],
-            'template_duration': f['template_duration'][()],
-            'template_s': f['template_s'][()],}
-        )
-            
+        bank_params = pd.DataFrame({k: v[:] for k, v in f.items()})
+        bank_params['tau0'] = pycbc.conversions.tau0_from_mass1_mass2(f['mass1'][:],f['mass2'][:],15)
+        bank_params['approximant'] = 'SEOBNRv5_ROM'
+    
     logging.info("Reading bank done in %s", datetime.datetime.now()-t_start)
     # Generate waveforms from the template bank
     
@@ -213,7 +138,7 @@ def main():
         logging.info("Generating waveforms from a bank...")
         # generate waveforms
         bank_params['index'] = bank_params.index
-        parlist = ['index', 'approximant', 'f_lower', 'mass1', 'mass2', 'spin1z', 'spin2z', 'eccentricity', 'rel_anomaly']
+        parlist = ['index'] + list(bank_params.columns)
         with multiprocessing.Pool(args.nprocesses) as pool:
             for return_i, return_hp in pool.imap_unordered(
                 wf_wrapper,
@@ -232,23 +157,23 @@ def main():
         else:
             for ii in tqdm(bank_params.index):
                 bank_waveform[ii] = pycbc.types.load_frequencyseries(args.bank_waveform, str(ii))
+
     logging.info("Bank waveform generation done")
 
-    # Step 2: Generate simulated signals
     global inj_params
+    # Generate simulated signals
     inj_params = pd.DataFrame(gen_injections().rvs(args.ninjections))
     inj_params['tau0'] = pycbc.conversions.tau0_from_mass1_mass2(inj_params['mass1'],inj_params['mass2'],15)
     inj_params['index'] = inj_params.index
-    inj_params['approximant'] = args.injection_waveform if args.injection_waveform is not None else bank_params['approximant'][0]
-    inj_params['f_lower'] = bank_params['f_lower'][0]
-    logging.info(f"Generated {len(inj_params)} injections with parameters: \n{inj_params.head()}")
+    inj_params['approximant'] = 'SEOBNRv5E'
+    inj_params['f_lower'] = 20
     # Generate waveforms from the simulated signals
     parlist = ['index', 'approximant', 'f_lower', 'mass1', 'mass2', 'spin1z', 'spin2z', 'eccentricity', 'rel_anomaly']
     logging.info("Generating injection waveforms...")
     global inj_waveform
     inj_waveform = {}
-    #inj_s = {}
-    #inj_duration = {}
+    inj_s = {}
+    inj_duration = {}
     with multiprocessing.Pool(args.nprocesses) as pool:
         for return_i, return_hp in pool.imap_unordered(
             wf_wrapper,
@@ -276,15 +201,15 @@ def main():
                 continue
             dict_current = {'row': return_i, 'fittingfactor': return_maxmatch}
             if return_maxindex is not None:
-                for cname in ['eccentricity', 'mass1', 'mass2', 'rel_anomaly', 'spin1z', 'spin2z', 'tau0', 'template_duration', 'template_s']:
+                for cname in list(bank_params.columns):
                     dict_current['b'+cname] = bank_params.loc[return_maxindex, cname]
             all_fitting_factors += [dict_current]
 
     finalize(all_fitting_factors, inj_params, args.output)
 
-def finalize(all_fitting_factors, input_params, output):
+def finalize(all_fitting_factors, inj_params, output):
     params_all_fitting_factor = pd.DataFrame(all_fitting_factors)
-    result = input_params.set_index("index").join(params_all_fitting_factor.set_index('row'),
+    result = inj_params.set_index("index").join(params_all_fitting_factor.set_index('row'),
                                                     how='outer',
                                                     rsuffix='_r')
     result.to_csv(output, index=False)
